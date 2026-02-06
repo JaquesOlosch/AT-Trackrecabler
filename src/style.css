@@ -1,0 +1,191 @@
+:root {
+  --bg: #0f0f12;
+  --surface: #1a1a20;
+  --border: #2a2a32;
+  --text: #e8e8ec;
+  --muted: #8888a0;
+  --accent: #7c5cff;
+  --accent-hover: #9b82ff;
+  --success: #4ade80;
+  --error: #f87171;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.subtitle {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.tool-description {
+  margin-bottom: 1rem;
+}
+
+.tool-description:first-child {
+  margin-top: 0;
+}
+
+.tool-description h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+  color: var(--text);
+}
+
+.tool-description-body {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.tool-description-body strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.tool-description-not {
+  border-left: 3px solid var(--muted);
+}
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+input[type="text"],
+input[type="url"] {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+input::placeholder {
+  color: var(--muted);
+}
+
+button {
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background 0.15s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-secondary {
+  background: var(--border);
+  color: var(--text);
+}
+
+.btn-secondary:hover {
+  background: #3a3a44;
+}
+
+.btn-success {
+  background: #2d5a3d;
+  color: var(--success);
+}
+
+.btn-success:hover {
+  background: #3d6a4d;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-top: 1rem;
+}
+
+.status {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+
+.status.connected {
+  color: var(--success);
+}
+
+.status.error {
+  color: var(--error);
+}
+
+.error {
+  color: var(--error);
+  padding: 1rem;
+  background: rgba(248, 113, 113, 0.1);
+  border-radius: var(--radius);
+}
+
+.log {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  max-height: 120px;
+  overflow-y: auto;
+  background: var(--bg);
+  padding: 0.75rem;
+  border-radius: var(--radius);
+  margin-top: 0.75rem;
+  color: var(--muted);
+}
+
+.log div {
+  margin-bottom: 0.25rem;
+}
+
+.log .created {
+  color: var(--success);
+}
+
+.log .removed {
+  color: var(--error);
+}

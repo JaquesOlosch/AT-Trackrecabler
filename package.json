@@ -1,0 +1,20 @@
+{
+  "name": "track-recabler",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "~5.8",
+    "vite": "^6.0.0",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "@audiotool/nexus": "^0.0.11"
+  }
+}
