@@ -171,8 +171,8 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
   /* ---------- Stage 3: Create merger group (if audioMerger topology) ---------- */
 
   let mergerGroupForSum: NexusEntity<"mixerGroup"> | null = null;
-  type MergerInputEntry = { channel: NexusEntity<"mixerChannel">; sourceSubmixerId?: string; fromSerialized: SerializedLocation; colorIndex: number };
-  const mergerInputEntries: MergerInputEntry[] = [];
+  type MergerInputEntry = { channel: NexusEntity<"mixerChannel">; fromSerialized: SerializedLocation; colorIndex: number };
+  const mergerDirectInputEntries: MergerInputEntry[] = [];
   if (plan.mergerGroupSpec) {
     const mergerEntity = plan.lastMixerId ? entities.getEntity(plan.lastMixerId) as NexusEntity | null : null;
     const mergerName = mergerEntity ? getEntityDisplayName(mergerEntity) : undefined;
@@ -184,12 +184,12 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     const groupStripLoc = getStripLocation(newGroup);
 
     for (const entry of plan.mergerGroupSpec.inputCables) {
+      if (entry.sourceSubmixerId) continue;
       const newCh = tx.create("mixerChannel", {}) as NexusEntity<"mixerChannel">;
       revertPayload.createdMixerChannelIds.push(newCh.id);
       addToGroup(newCh, groupStripLoc);
-      mergerInputEntries.push({
+      mergerDirectInputEntries.push({
         channel: newCh,
-        sourceSubmixerId: entry.sourceSubmixerId,
         fromSerialized: entry.fromSerialized as SerializedLocation,
         colorIndex: entry.colorIndex,
       });
@@ -453,24 +453,9 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     }
   }
 
-  /* ---------- Stage 7: Wire merger input cables to submixer group outputs ---------- */
+  /* ---------- Stage 7: Wire direct merger input cables (non-submixer sources) ---------- */
 
-  for (const { channel, sourceSubmixerId, fromSerialized, colorIndex } of mergerInputEntries) {
-    const chInputLoc = channel.fields.audioInput.location;
-    if (sourceSubmixerId) {
-      const subGroup = createdGroupBySubmixerId.get(sourceSubmixerId);
-      if (subGroup) {
-        const subGroupFields = subGroup.fields as Record<string, { location?: NexusLocation } | undefined>;
-        const subGroupOut = subGroupFields.audioOutput?.location ?? subGroupFields.mainOutput?.location;
-        if (subGroupOut) {
-          createTrackedCable(ctx, subGroupOut, chInputLoc, colorIndex, "Merger submixer group output cable skipped");
-        } else {
-          createTrackedCable(ctx, resolve(entities, fromSerialized), chInputLoc, colorIndex, "Merger input cable (fallback) skipped");
-          warnings.push("Merger submixer group has no output location; cabled direct source to channel");
-        }
-      }
-    } else {
-      createTrackedCable(ctx, resolve(entities, fromSerialized), chInputLoc, colorIndex, "Merger input cable skipped");
-    }
+  for (const { channel, fromSerialized, colorIndex } of mergerDirectInputEntries) {
+    createTrackedCable(ctx, resolve(entities, fromSerialized), channel.fields.audioInput.location, colorIndex, "Merger input cable skipped");
   }
 }
