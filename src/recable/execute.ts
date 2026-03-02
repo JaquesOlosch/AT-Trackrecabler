@@ -203,9 +203,6 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     const newAux = tx.create("mixerAux", {
       preGain: auxSendGainInfo?.value ?? 1,
     }) as NexusEntity<"mixerAux">;
-    if (!createdAuxBySubmixerAndKey.has(submixerId)) createdAuxBySubmixerAndKey.set(submixerId, {});
-    createdAuxBySubmixerAndKey.get(submixerId)![auxKey] = newAux;
-    revertPayload.createdMixerAuxIds.push(newAux.id);
     const cableIds = wireAuxCables(
       entities, tx, spec,
       newAux.fields.insertOutput.location,
@@ -215,6 +212,13 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
       ctx.usedFromSocketKeys,
       ctx.usedToSocketKeys,
     );
+    if (cableIds.length === 0) {
+      tx.remove(newAux);
+      continue;
+    }
+    if (!createdAuxBySubmixerAndKey.has(submixerId)) createdAuxBySubmixerAndKey.set(submixerId, {});
+    createdAuxBySubmixerAndKey.get(submixerId)![auxKey] = newAux;
+    revertPayload.createdMixerAuxIds.push(newAux.id);
     revertPayload.createdCableIds.push(...cableIds);
 
     if (auxSendGainInfo) {
@@ -367,7 +371,6 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
       const auxSpec = spec.auxSpecs?.[auxKey];
       if (!auxSpec) continue;
       const newAux = tx.create("mixerAux", {}) as NexusEntity<"mixerAux">;
-      revertPayload.createdMixerAuxIds.push(newAux.id);
       const cableIds = wireAuxCables(
         entities, tx, auxSpec,
         newAux.fields.insertOutput.location,
@@ -377,6 +380,11 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
         ctx.usedFromSocketKeys,
         ctx.usedToSocketKeys,
       );
+      if (cableIds.length === 0) {
+        tx.remove(newAux);
+        continue;
+      }
+      revertPayload.createdMixerAuxIds.push(newAux.id);
       revertPayload.createdCableIds.push(...cableIds);
       for (const { newChannel, channelRef } of newGroupChannels) {
         const gain = auxKey === "aux2" ? (channelRef.aux2SendGain ?? 0) : (channelRef.aux1SendGain ?? 0);
