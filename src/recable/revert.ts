@@ -53,6 +53,7 @@ export async function revertRecable(
       for (const cable of payload.removedChainLast) createCableIfUnique(cable);
       for (const cable of payload.removedAuxCables) createCableIfUnique(cable);
       for (const cable of payload.removedSubmixerCables) createCableIfUnique(cable);
+      for (const cable of payload.removedMergerInputCables ?? []) createCableIfUnique(cable);
 
       if (skippedCables > 0) {
         warnings.push(

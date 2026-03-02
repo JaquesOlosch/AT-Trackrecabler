@@ -1,7 +1,15 @@
 /** Entity types used as submixers (centroid, kobolt, minimixer). */
 export const SUBMIXER_ENTITY_TYPES = new Set(["centroid", "kobolt", "minimixer"]);
 
-/** Entity types that are channels/mixers (not devices); cables to these end the aux chain. */
+/** Last mixer before stagebox: centroid, kobolt, minimixer, or merger. */
+export const LAST_MIXER_ENTITY_TYPES = new Set(["centroid", "kobolt", "minimixer", "audioMerger"]);
+
+export function isLastMixerEntity(entity: { entityType: string }): boolean {
+  return LAST_MIXER_ENTITY_TYPES.has(entity.entityType);
+}
+
+/** Entity types that are channels/mixers (not devices); cables to these end the aux chain.
+ * Includes audioMerger (3 inputs, 1 output, triangular mix) – treat as mixer-like endpoint. */
 export const CHANNEL_ENTITY_TYPES = new Set([
   "centroid",
   "kobolt",
@@ -11,6 +19,7 @@ export const CHANNEL_ENTITY_TYPES = new Set([
   "mixerGroup",
   "mixerAux",
   "mixerMaster",
+  "audioMerger",
 ]);
 
 /** Aux key: centroid has aux1/aux2; minimixer has a single aux via auxSendOutput/auxReturnInput. */

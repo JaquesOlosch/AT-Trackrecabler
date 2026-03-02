@@ -1,11 +1,12 @@
 import type { NexusEntity, NexusLocation } from "@audiotool/nexus/document";
-import type { RecablePlan } from "./types";
+import type { RecablePlan, SerializedLocation } from "./types";
 import type { SubmixerChannelRef } from "./types";
 import { SUBMIXER_AUX_KEYS } from "./constants";
 import { centroidEqToMixerEq } from "./mapping/eq";
 import { centroidPreGainToMixerPreGain } from "./mapping/gain";
 import { copyAutomationForChannel, copyAuxAutomationForChannel, copyAutomationBetweenLocations } from "./mapping/automation";
 import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity } from "./cables";
+import { locationKey } from "./tracing";
 
 type Transaction = {
   create: (type: string, props: unknown) => { id: string; location?: NexusLocation; fields?: Record<string, unknown> };
@@ -30,32 +31,36 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
   const nextOrderRef = { value: maxOrder + 1 };
   const usedToSocketKeys = new Set<string>();
   const usedFromSocketKeys = new Set<string>();
+  const usedAutomationTargetKeys = new Set<string>();
+  const usedChildStripKeys = new Set<string>();
 
-  type NewChannelWithCentroid = { newChannel: NexusEntity<"mixerChannel">; centroidChannel: NexusEntity<"centroidChannel"> };
+  type NewChannelWithCentroid = { newChannel: NexusEntity<"mixerChannel">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef };
   const newChannelsWithCentroid: NewChannelWithCentroid[] = [];
 
   for (let i = 0; i < plan.directCables.length; i++) {
-    const { centroidChannel } = plan.directCables[i];
-    const centroidPostGain = (centroidChannel.fields.postGain as { value: number }).value;
-    const centroidPanning = (centroidChannel.fields.panning as { value?: number })?.value ?? 0;
-    const centroidPreGain = (centroidChannel.fields.preGain as { value?: number })?.value ?? 1;
-    const centroidIsMuted = (centroidChannel.fields.isMuted as { value?: boolean })?.value ?? false;
-    const centroidIsSoloed = (centroidChannel.fields.isSoloed as { value?: boolean })?.value ?? false;
-    const mixerPreGain = centroidPreGainToMixerPreGain(centroidPreGain);
-    const eqParams = centroidEqToMixerEq(centroidChannel);
+    const { centroidChannel, channelRef } = plan.directCables[i];
+    const postGain = centroidChannel ? (centroidChannel.fields.postGain as { value: number }).value : channelRef.postGain;
+    const panning = centroidChannel ? (centroidChannel.fields.panning as { value?: number })?.value ?? 0 : (channelRef.panning ?? 0);
+    const preGain = centroidChannel ? (centroidChannel.fields.preGain as { value?: number })?.value ?? 1 : 1;
+    const isMuted = centroidChannel ? (centroidChannel.fields.isMuted as { value?: boolean })?.value ?? false : (channelRef.isMuted ?? false);
+    const isSoloed = centroidChannel ? (centroidChannel.fields.isSoloed as { value?: boolean })?.value ?? false : (channelRef.isSoloed ?? false);
+    const mixerPreGain = centroidChannel ? centroidPreGainToMixerPreGain(preGain) : 1;
+    const eqParams = centroidChannel ? centroidEqToMixerEq(centroidChannel) : channelRef.eqParams;
     const newChannel = tx.create("mixerChannel", {
       preGain: mixerPreGain,
-      faderParameters: { postGain: centroidPostGain, panning: centroidPanning, isMuted: centroidIsMuted, isSoloed: centroidIsSoloed },
-      eq: eqParams,
+      faderParameters: { postGain, panning, isMuted, isSoloed },
+      ...(eqParams ? { eq: eqParams } : {}),
     }) as NexusEntity<"mixerChannel">;
     revertPayload.createdMixerChannelIds.push(newChannel.id);
-    newChannelsWithCentroid.push({ newChannel, centroidChannel });
+    newChannelsWithCentroid.push({ newChannel, centroidChannel, channelRef });
 
-    const autoResult = copyAutomationForChannel(entities as never, tx as never, centroidChannel, newChannel, nextOrderRef, warnings);
-    revertPayload.createdAutomationTrackIds.push(...autoResult.trackIds);
-    revertPayload.createdAutomationCollectionIds.push(...autoResult.collectionIds);
-    revertPayload.createdAutomationRegionIds.push(...autoResult.regionIds);
-    revertPayload.createdAutomationEventIds.push(...autoResult.eventIds);
+    if (centroidChannel) {
+      const autoResult = copyAutomationForChannel(entities as never, tx as never, centroidChannel, newChannel, nextOrderRef, warnings);
+      revertPayload.createdAutomationTrackIds.push(...autoResult.trackIds);
+      revertPayload.createdAutomationCollectionIds.push(...autoResult.collectionIds);
+      revertPayload.createdAutomationRegionIds.push(...autoResult.regionIds);
+      revertPayload.createdAutomationEventIds.push(...autoResult.eventIds);
+    }
 
     const fromSocket = getLocationFromEntity(entities as never, revertPayload.removedChannelCables[i].from);
     const channelToLoc = newChannel.fields.audioInput.location;
@@ -67,12 +72,47 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
     }
   }
 
+  let mergerGroupForSum: NexusEntity<"mixerGroup"> | null = null;
+  type MergerInputEntry = { channel: NexusEntity<"mixerChannel">; sourceSubmixerId?: string; fromSerialized: SerializedLocation; colorIndex: number };
+  const mergerInputEntries: MergerInputEntry[] = [];
+  if (plan.mergerGroupSpec) {
+    const { inputCables: mergerInputCables } = plan.mergerGroupSpec;
+    const newGroup = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+    revertPayload.createdMixerGroupIds.push(newGroup.id);
+    mergerGroupForSum = newGroup;
+    const groupStripLoc = (newGroup as { location?: NexusLocation }).location ?? ({ entityId: newGroup.id, fieldIndex: [] } as unknown as NexusLocation);
+
+    for (const entry of mergerInputCables) {
+      const { fromSerialized, colorIndex, sourceSubmixerId } = entry;
+      const newCh = tx.create("mixerChannel", {}) as NexusEntity<"mixerChannel">;
+      revertPayload.createdMixerChannelIds.push(newCh.id);
+      const childStripLoc = (newCh as { location?: NexusLocation }).location ?? ({ entityId: newCh.id, fieldIndex: [] } as unknown as NexusLocation);
+      const childStripKey = locationKey(childStripLoc);
+      if (!usedChildStripKeys.has(childStripKey)) {
+        usedChildStripKeys.add(childStripKey);
+        const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+        revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      }
+      mergerInputEntries.push({
+        channel: newCh,
+        sourceSubmixerId,
+        fromSerialized: fromSerialized as SerializedLocation,
+        colorIndex,
+      });
+    }
+  }
+
   if (plan.masterChainSpec) {
     const masterChainSpec = plan.masterChainSpec;
     const sendLoc = getLocationFromEntity(entities as never, masterChainSpec.sendLoc);
     const returnLoc = getLocationFromEntity(entities as never, masterChainSpec.returnLoc);
     const firstTo = getLocationFromEntity(entities as never, masterChainSpec.firstTo);
-    const centroidOutLoc = getLocationFromEntity(entities as never, masterChainSpec.centroidOut);
+    const centroidOutLoc =
+      plan.mergerGroupSpec && mergerGroupForSum
+        ? (mergerGroupForSum.fields as Record<string, { location?: NexusLocation } | undefined>).audioOutput?.location ??
+          (mergerGroupForSum.fields as Record<string, { location?: NexusLocation } | undefined>).mainOutput?.location ??
+          null
+        : getLocationFromEntity(entities as never, masterChainSpec.centroidOut);
     if (sendLoc && firstTo) {
       const id = createCableIfSocketsFree(tx as never, sendLoc, firstTo, masterChainSpec.colorFirst, usedFromSocketKeys, usedToSocketKeys, warnings, "Master insert send cable skipped");
       if (id) revertPayload.createdCableIds.push(id);
@@ -114,23 +154,23 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
     }
   }
 
-  const createdAuxByKey: { aux1?: NexusEntity<"mixerAux">; aux2?: NexusEntity<"mixerAux"> } = {};
-  for (const auxKey of ["aux1", "aux2"] as const) {
-    const auxSpec = plan.auxSpecByKey[auxKey];
-    if (!auxSpec) continue;
-    const auxSendGainInfo = plan.centroidAuxSendGainByKey[auxKey];
+  const mainAuxKeys = ["aux1", "aux2", "aux"] as const;
+  const createdAuxBySubmixerAndKey = new Map<string, Partial<Record<"aux1" | "aux2" | "aux", NexusEntity<"mixerAux">>>>();
+  for (const entry of plan.auxSpecsPerSubmixer) {
+    const { submixerId, auxKey, spec, auxSendGainInfo } = entry;
     const newAux = tx.create("mixerAux", {
       preGain: auxSendGainInfo?.value ?? 1,
     }) as NexusEntity<"mixerAux">;
-    createdAuxByKey[auxKey] = newAux;
+    if (!createdAuxBySubmixerAndKey.has(submixerId)) createdAuxBySubmixerAndKey.set(submixerId, {});
+    createdAuxBySubmixerAndKey.get(submixerId)![auxKey] = newAux;
     revertPayload.createdMixerAuxIds.push(newAux.id);
     const cableIds = wireAuxCables(
       entities as never,
       tx as never,
-      auxSpec,
+      spec,
       newAux.fields.insertOutput.location,
       newAux.fields.insertInput.location,
-      "Centroid",
+      auxKey === "aux" ? "Minimixer" : "Centroid",
       warnings,
       usedFromSocketKeys,
       usedToSocketKeys
@@ -150,50 +190,111 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
   }
 
   const auxGainFields = { aux1: "aux1SendGain" as const, aux2: "aux2SendGain" as const };
-  for (const { newChannel, centroidChannel } of newChannelsWithCentroid) {
+  const lastMixerAuxByKey = plan.lastMixerId ? createdAuxBySubmixerAndKey.get(plan.lastMixerId) : undefined;
+  for (const { newChannel, centroidChannel, channelRef } of newChannelsWithCentroid) {
     const auxSendLoc = newChannel.fields.auxSend.location;
-    const auxRoutes: { aux1?: NexusEntity<"mixerAuxRoute">; aux2?: NexusEntity<"mixerAuxRoute"> } = {};
-    for (const auxKey of ["aux1", "aux2"] as const) {
-      const newAux = createdAuxByKey[auxKey];
-      if (!newAux) continue;
-      const gainField = auxGainFields[auxKey];
-      const gain = (centroidChannel.fields[gainField] as { value: number }).value;
-      const route = tx.create("mixerAuxRoute", {
-        auxSend: auxSendLoc,
-        auxReceive: newAux.location,
-        gain,
-      }) as NexusEntity<"mixerAuxRoute">;
-      revertPayload.createdMixerAuxRouteIds.push(route.id);
-      auxRoutes[auxKey] = route;
+    const auxRoutes: { aux1?: NexusEntity<"mixerAuxRoute">; aux2?: NexusEntity<"mixerAuxRoute">; aux?: NexusEntity<"mixerAuxRoute"> } = {};
+    if (lastMixerAuxByKey) {
+      for (const auxKey of mainAuxKeys) {
+        const newAux = lastMixerAuxByKey[auxKey];
+        if (!newAux) continue;
+        const gain =
+          centroidChannel && auxKey !== "aux"
+            ? (centroidChannel.fields[auxGainFields[auxKey]] as { value: number }).value
+            : auxKey === "aux"
+              ? (channelRef.aux1SendGain ?? 0)
+              : auxKey === "aux1"
+                ? (channelRef.aux1SendGain ?? 0)
+                : (channelRef.aux2SendGain ?? 0);
+        const route = tx.create("mixerAuxRoute", {
+          auxSend: auxSendLoc,
+          auxReceive: newAux.location,
+          gain,
+        }) as NexusEntity<"mixerAuxRoute">;
+        revertPayload.createdMixerAuxRouteIds.push(route.id);
+        auxRoutes[auxKey] = route;
+      }
     }
-    const auxAutoResult = copyAuxAutomationForChannel(entities as never, tx as never, centroidChannel, auxRoutes, nextOrderRef, warnings);
-    revertPayload.createdAutomationTrackIds.push(...auxAutoResult.trackIds);
-    revertPayload.createdAutomationCollectionIds.push(...auxAutoResult.collectionIds);
-    revertPayload.createdAutomationRegionIds.push(...auxAutoResult.regionIds);
-    revertPayload.createdAutomationEventIds.push(...auxAutoResult.eventIds);
+    if (centroidChannel) {
+      const auxAutoResult = copyAuxAutomationForChannel(entities as never, tx as never, centroidChannel, auxRoutes, nextOrderRef, warnings, usedAutomationTargetKeys);
+      revertPayload.createdAutomationTrackIds.push(...auxAutoResult.trackIds);
+      revertPayload.createdAutomationCollectionIds.push(...auxAutoResult.collectionIds);
+      revertPayload.createdAutomationRegionIds.push(...auxAutoResult.regionIds);
+      revertPayload.createdAutomationEventIds.push(...auxAutoResult.eventIds);
+    }
   }
 
   const createdGroupBySubmixerId = new Map<string, NexusEntity<"mixerGroup">>();
+
+  const lastMixerGroup =
+    plan.lastMixerId &&
+    !plan.mergerGroupSpec &&
+    (plan.directCables.length > 0 || (plan.childSubmixersMap.get(plan.lastMixerId)?.length ?? 0) > 0)
+      ? (() => {
+          const g = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+          revertPayload.createdMixerGroupIds.push(g.id);
+          createdGroupBySubmixerId.set(plan.lastMixerId!, g);
+          const groupStripLoc = (g as { location?: NexusLocation }).location ?? ({ entityId: g.id, fieldIndex: [] } as unknown as NexusLocation);
+          for (const { newChannel } of newChannelsWithCentroid) {
+            const childStripLoc = (newChannel as { location?: NexusLocation }).location ?? ({ entityId: newChannel.id, fieldIndex: [] } as unknown as NexusLocation);
+            const childStripKey = locationKey(childStripLoc);
+            if (!usedChildStripKeys.has(childStripKey)) {
+              usedChildStripKeys.add(childStripKey);
+              const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+              revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+            }
+          }
+          return g;
+        })()
+      : null;
+
+  const mergerDirectInputIds = new Set(
+    plan.mergerGroupSpec?.inputCables.map((e) => e.sourceSubmixerId).filter(Boolean) ?? []
+  );
+
   for (const submixer of plan.topoOrder) {
     const submixerId = submixer.id;
     const spec = plan.submixerSpecBySubmixerId.get(submixerId);
     if (!spec) continue;
+    const isLastMixer = submixerId === plan.lastMixerId;
+    const hasChannelsOrChain =
+      spec.instrumentCables.length > 0 ||
+      !!spec.chainSpec ||
+      (spec.auxChainEndCables?.length ?? 0) > 0;
+    if (!hasChannelsOrChain && !isLastMixer) continue;
     let newGroup: NexusEntity<"mixerGroup">;
-    try {
-      newGroup = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
-    } catch {
-      continue;
+    if (isLastMixer && lastMixerGroup) {
+      newGroup = lastMixerGroup;
+    } else {
+      try {
+        newGroup = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+      } catch {
+        continue;
+      }
+      revertPayload.createdMixerGroupIds.push(newGroup.id);
+      createdGroupBySubmixerId.set(submixerId, newGroup);
     }
-    revertPayload.createdMixerGroupIds.push(newGroup.id);
-    createdGroupBySubmixerId.set(submixerId, newGroup);
     const groupInsertSend = (newGroup.fields as { insertOutput?: { location: NexusLocation } }).insertOutput?.location;
     const groupInsertReturn = (newGroup.fields as { insertInput?: { location: NexusLocation } }).insertInput?.location;
     const groupStripLoc = (newGroup as { location?: NexusLocation }).location ?? ({ entityId: newGroup.id, fieldIndex: [] } as unknown as NexusLocation);
 
+    if (mergerGroupForSum && mergerDirectInputIds.has(submixerId)) {
+      const mergerStripLoc = (mergerGroupForSum as { location?: NexusLocation }).location ?? ({ entityId: mergerGroupForSum.id, fieldIndex: [] } as unknown as NexusLocation);
+      const childStripKey = locationKey(groupStripLoc);
+      if (!usedChildStripKeys.has(childStripKey)) {
+        usedChildStripKeys.add(childStripKey);
+        const grouping = tx.create("mixerStripGrouping", { childStrip: groupStripLoc, groupStrip: mergerStripLoc }) as NexusEntity<"mixerStripGrouping">;
+        revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      }
+    }
+
     type NewChWithSubmixerRef = { newChannel: NexusEntity<"mixerChannel">; channelRef: SubmixerChannelRef };
     const newGroupChannels: NewChWithSubmixerRef[] = [];
 
-    for (const { channelRef, fromSerialized, colorIndex } of spec.instrumentCables) {
+    if (isLastMixer && lastMixerGroup) {
+      newGroupChannels.push(...newChannelsWithCentroid.map(({ newChannel, channelRef }) => ({ newChannel, channelRef })));
+    }
+    for (const { channelRef, fromSerialized, colorIndex } of isLastMixer ? [] : spec.instrumentCables) {
       const panning = channelRef.panning ?? 0;
       const isMuted = channelRef.isMuted ?? false;
       const isSoloed = channelRef.isSoloed ?? false;
@@ -203,8 +304,14 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
       const newCh = tx.create("mixerChannel", channelPayload) as NexusEntity<"mixerChannel">;
       revertPayload.createdMixerChannelIds.push(newCh.id);
       const childStripLoc = (newCh as { location?: NexusLocation }).location ?? ({ entityId: newCh.id, fieldIndex: [] } as unknown as NexusLocation);
-      const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
-      revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      const childStripKey = locationKey(childStripLoc);
+      if (!usedChildStripKeys.has(childStripKey)) {
+        usedChildStripKeys.add(childStripKey);
+        const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+        revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      } else {
+        warnings.push("Submixer channel strip grouping skipped: strip already in a group");
+      }
       newGroupChannels.push({ newChannel: newCh, channelRef });
       const fromSocket = getLocationFromEntity(entities as never, fromSerialized);
       const grpChToLoc = newCh.fields.audioInput.location;
@@ -218,12 +325,18 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
       const childGroup = createdGroupBySubmixerId.get(childId);
       if (childGroup) {
         const childGroupLoc = (childGroup as { location?: NexusLocation }).location ?? ({ entityId: childGroup.id, fieldIndex: [] } as unknown as NexusLocation);
-        const grouping = tx.create("mixerStripGrouping", { childStrip: childGroupLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
-        revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+        const childStripKey = locationKey(childGroupLoc);
+        if (!usedChildStripKeys.has(childStripKey)) {
+          usedChildStripKeys.add(childStripKey);
+          const grouping = tx.create("mixerStripGrouping", { childStrip: childGroupLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+          revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+        } else {
+          warnings.push("Submixer child group strip grouping skipped: strip already in a group");
+        }
       }
     }
 
-    if (spec.chainSpec && groupInsertSend && groupInsertReturn) {
+    if (!isLastMixer && spec.chainSpec && groupInsertSend && groupInsertReturn) {
       const firstTo = getLocationFromEntity(entities as never, spec.chainSpec.firstTo);
       if (firstTo) {
         const id = createCableIfSocketsFree(tx as never, groupInsertSend, firstTo, spec.chainSpec.colorFirst, usedFromSocketKeys, usedToSocketKeys, warnings, "Submixer chain first cable skipped");
@@ -232,6 +345,7 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
         warnings.push("Submixer chain first cable skipped: target not found");
       }
       const lastCablesList = spec.chainSpec.lastCables;
+      const insertReturnIndex = spec.chainSpec.insertReturnCableIndex;
       if (lastCablesList.length === 1) {
         const { lastFrom: lastFromSerialized, colorLast } = lastCablesList[0];
         const lastFrom = getLocationFromEntity(entities as never, lastFromSerialized);
@@ -242,12 +356,28 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
           warnings.push("Submixer chain return cable skipped: source not found");
         }
       } else if (lastCablesList.length > 1) {
-        for (const { lastFrom: lastFromSerialized, colorLast } of lastCablesList) {
+        const branchIndices = lastCablesList.map((_, i) => i).filter((i) => i !== insertReturnIndex);
+        if (insertReturnIndex !== undefined && insertReturnIndex >= 0 && insertReturnIndex < lastCablesList.length) {
+          const { lastFrom: returnFromSerialized, colorLast: returnColor } = lastCablesList[insertReturnIndex];
+          const returnFrom = getLocationFromEntity(entities as never, returnFromSerialized);
+          if (returnFrom) {
+            const id = createCableIfSocketsFree(tx as never, returnFrom, groupInsertReturn, returnColor, usedFromSocketKeys, usedToSocketKeys, warnings, "Submixer chain return cable skipped");
+            if (id) revertPayload.createdCableIds.push(id);
+          } else {
+            warnings.push("Submixer chain return cable skipped: source not found");
+          }
+        }
+        for (const i of branchIndices) {
+          const { lastFrom: lastFromSerialized, colorLast } = lastCablesList[i];
           const newCh = tx.create("mixerChannel", {}) as NexusEntity<"mixerChannel">;
           revertPayload.createdMixerChannelIds.push(newCh.id);
           const childStripLoc = (newCh as { location?: NexusLocation }).location ?? ({ entityId: newCh.id, fieldIndex: [] } as unknown as NexusLocation);
-          const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
-          revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+          const childStripKey = locationKey(childStripLoc);
+          if (!usedChildStripKeys.has(childStripKey)) {
+            usedChildStripKeys.add(childStripKey);
+            const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+            revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+          }
           const branchToLoc = newCh.fields.audioInput.location;
           const lastFrom = getLocationFromEntity(entities as never, lastFromSerialized);
           if (lastFrom) {
@@ -260,7 +390,7 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
       }
     }
 
-    for (const auxKey of SUBMIXER_AUX_KEYS) {
+    for (const auxKey of isLastMixer ? [] : SUBMIXER_AUX_KEYS) {
       const auxSpec = spec.auxSpecs?.[auxKey];
       if (!auxSpec) continue;
       const newAux = tx.create("mixerAux", {}) as NexusEntity<"mixerAux">;
@@ -288,12 +418,16 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
       }
     }
 
-    for (const { fromSerialized, colorIndex } of spec.auxChainEndCables) {
+    for (const { fromSerialized, colorIndex } of isLastMixer ? [] : spec.auxChainEndCables) {
       const newCh = tx.create("mixerChannel", {}) as NexusEntity<"mixerChannel">;
       revertPayload.createdMixerChannelIds.push(newCh.id);
       const childStripLoc = (newCh as { location?: NexusLocation }).location ?? ({ entityId: newCh.id, fieldIndex: [] } as unknown as NexusLocation);
-      const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
-      revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      const childStripKey = locationKey(childStripLoc);
+      if (!usedChildStripKeys.has(childStripKey)) {
+        usedChildStripKeys.add(childStripKey);
+        const grouping = tx.create("mixerStripGrouping", { childStrip: childStripLoc, groupStrip: groupStripLoc }) as NexusEntity<"mixerStripGrouping">;
+        revertPayload.createdMixerStripGroupingIds.push(grouping.id);
+      }
       const auxEndToLoc = newCh.fields.audioInput.location;
       const fromSocket = getLocationFromEntity(entities as never, fromSerialized);
       if (fromSocket) {
@@ -301,6 +435,36 @@ export function applyPlan(tx: Transaction, plan: RecablePlan, warnings: string[]
         if (id) revertPayload.createdCableIds.push(id);
       } else {
         warnings.push("Aux chain end cable skipped: source not found");
+      }
+    }
+  }
+
+  for (const { channel, sourceSubmixerId, fromSerialized, colorIndex } of mergerInputEntries) {
+    const chInputLoc = channel.fields.audioInput.location;
+    if (sourceSubmixerId) {
+      const subGroup = createdGroupBySubmixerId.get(sourceSubmixerId);
+      if (subGroup) {
+        const subGroupFields = subGroup.fields as Record<string, { location?: NexusLocation } | undefined>;
+        const subGroupOut = subGroupFields.audioOutput?.location ?? subGroupFields.mainOutput?.location;
+        if (subGroupOut) {
+          const id = createCableIfSocketsFree(tx as never, subGroupOut, chInputLoc, colorIndex, usedFromSocketKeys, usedToSocketKeys, warnings, "Merger submixer group output cable skipped");
+          if (id) revertPayload.createdCableIds.push(id);
+        } else {
+          const fromSocket = getLocationFromEntity(entities as never, fromSerialized);
+          if (fromSocket) {
+            const id = createCableIfSocketsFree(tx as never, fromSocket, chInputLoc, colorIndex, usedFromSocketKeys, usedToSocketKeys, warnings, "Merger input cable (fallback) skipped");
+            if (id) revertPayload.createdCableIds.push(id);
+          }
+          warnings.push("Merger submixer group has no output location; cabled direct source to channel");
+        }
+      }
+    } else {
+      const fromSocket = getLocationFromEntity(entities as never, fromSerialized);
+      if (fromSocket) {
+        const id = createCableIfSocketsFree(tx as never, fromSocket, chInputLoc, colorIndex, usedFromSocketKeys, usedToSocketKeys, warnings, "Merger input cable skipped");
+        if (id) revertPayload.createdCableIds.push(id);
+      } else {
+        warnings.push("Merger input cable skipped: source not found");
       }
     }
   }

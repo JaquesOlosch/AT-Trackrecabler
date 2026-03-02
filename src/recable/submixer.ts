@@ -55,15 +55,33 @@ export function getSubmixerChannels(entities: EntityQuery, submixer: NexusEntity
   const type = submixer.entityType;
   try {
     if (type === "centroid") {
-      return entities
+      const channels = entities
         .ofTypes("centroidChannel")
         .get()
         .filter((cc) => (cc.fields as { centroid?: { value?: { entityId?: string } } }).centroid?.value?.entityId === id) as NexusEntity[];
+      return channels.slice().sort((a, b) => a.id.localeCompare(b.id));
     }
   } catch {
     // Entity type may not exist in this SDK version
   }
   return [];
+}
+
+/**
+ * Channel/input refs for the last mixer (centroid, kobolt, minimixer, or merger).
+ * For merger: one ref per audioInputA/B/C with default params.
+ */
+export function getLastMixerChannelRefs(entities: EntityQuery, lastMixer: NexusEntity): SubmixerChannelRef[] {
+  if (lastMixer.entityType === "audioMerger") {
+    const fields = lastMixer.fields as Record<string, { location?: NexusLocation } | undefined>;
+    const refs: SubmixerChannelRef[] = [];
+    for (const key of ["audioInputA", "audioInputB", "audioInputC"] as const) {
+      const loc = fields[key]?.location;
+      if (loc) refs.push({ inputLoc: loc, postGain: 0 });
+    }
+    return refs;
+  }
+  return getSubmixerChannelRefs(entities, lastMixer);
 }
 
 /** All channel input locations and params for a submixer. */
@@ -185,8 +203,9 @@ export function buildSubmixerTreeAndOrder(
   const topoOrder: NexusEntity[] = [];
   const remaining = new Set(allIds);
   while (remaining.size > 0) {
+    const sortedRemaining = [...remaining].sort((a, b) => a.localeCompare(b));
     let found: string | null = null;
-    for (const id of remaining) {
+    for (const id of sortedRemaining) {
       const deps = childSubmixersMap.get(id) ?? [];
       const allDepsProcessed = deps.every((t) => !remaining.has(t));
       if (allDepsProcessed) {

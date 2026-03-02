@@ -31,16 +31,27 @@ export type RevertPayload = {
   removedChainLast: RemovedCable[];
   removedAuxCables: RemovedCable[];
   removedSubmixerCables: RemovedCable[];
+  removedMergerInputCables: RemovedCable[];
 };
 
 /** Spec for aux cables to recreate (send + return lists). */
 export type AuxCableSpec = { send: RemovedCable[]; return: RemovedCable[] };
+
+/** One mixer aux strip per source: submixerId + auxKey + spec (no merging across submixers). */
+export type SubmixerAuxSpecEntry = {
+  submixerId: string;
+  auxKey: "aux1" | "aux2" | "aux";
+  spec: AuxCableSpec;
+  auxSendGainInfo?: { value: number; location: NexusLocation };
+};
 
 /** Spec for device chain cables (first cable + all last cables for multi-branch). */
 export type ChainSpec = {
   firstTo: SerializedLocation;
   colorFirst: number;
   lastCables: { lastFrom: SerializedLocation; colorLast: number }[];
+  /** When multiple branches (e.g. splitter): index of the branch with shortest path to connect to insert return. */
+  insertReturnCableIndex?: number;
 };
 
 /** Spec for master insert chain (includes master send/return locations). */
@@ -48,6 +59,13 @@ export type MasterChainSpec = ChainSpec & {
   sendLoc: SerializedLocation;
   returnLoc: SerializedLocation;
   centroidOut: SerializedLocation;
+};
+
+/** When the main chain goes through a merger: one channel per merger input, then a group.
+ * FX after the merger go to master insert (merger = last mixer). No chainSpec here.
+ * If a merger input comes from a submixer (centroid/kobolt/minimixer), sourceSubmixerId is set and we create a subgroup for it. */
+export type MergerGroupSpec = {
+  inputCables: { fromSerialized: SerializedLocation; colorIndex: number; sourceSubmixerId?: string }[];
 };
 
 /** EQ params produced by centroidEqToMixerEq (used in SubmixerChannelRef). */
@@ -87,13 +105,16 @@ export type SubmixerCreationSpec = {
 export type DiscoveryResult =
   | {
       ok: true;
-      lastCentroid: NexusEntity<"centroid">;
+      /** Set when last mixer is a centroid (for aux/automation). Null for kobolt, minimixer, or merger. */
+      lastCentroid: NexusEntity<"centroid"> | null;
       centroidChannels: NexusEntity<"centroidChannel">[];
-      cablesWithChannel: { cable: NexusEntity<"desktopAudioCable">; centroidChannel: NexusEntity<"centroidChannel"> }[];
-      directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel: NexusEntity<"centroidChannel">; sourceSubmixer: NexusEntity | null }[];
-      submixerCableMap: Map<string, { cable: NexusEntity<"desktopAudioCable">; centroidChannel: NexusEntity<"centroidChannel">; sourceSubmixer: NexusEntity | null }[]>;
+      cablesWithChannel: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef }[];
+      directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef; sourceSubmixer: NexusEntity | null }[];
+      submixerCableMap: Map<string, { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef; sourceSubmixer: NexusEntity | null }[]>;
       chain: { firstCable: NexusEntity<"desktopAudioCable">; lastCables: NexusEntity<"desktopAudioCable">[] } | null;
-      auxSpecByKey: { aux1?: AuxCableSpec; aux2?: AuxCableSpec };
+      /** One entry per (submixer, auxKey) with cables – no merging so each centroid/minimixer gets its own aux strip. */
+      auxSpecsPerSubmixer: SubmixerAuxSpecEntry[];
+      lastMixerId: string | null;
       centroidAuxReturnLocs: NexusLocation[];
       lastCentroidChannelInputKeys: Set<string>;
       topoOrder: NexusEntity[];
@@ -104,23 +125,30 @@ export type DiscoveryResult =
       removedChainFirst: RemovedCable | null;
       removedChainLast: RemovedCable[];
       removedAuxCables: RemovedCable[];
-      removedSubmixerCables: RemovedCable[];
-      masterChainSpec: MasterChainSpec | null;
+  removedSubmixerCables: RemovedCable[];
+  removedMergerInputCables: RemovedCable[];
+  masterChainSpec: MasterChainSpec | null;
+  mergerGroupSpec: MergerGroupSpec | null;
+  /** Submixers that feed the merger: id -> spec (instrument cables only; output goes to merger channel). */
+  mergerSubmixerSpecs: Map<string, SubmixerCreationSpec>;
     }
   | { ok: false; error: string };
 
 /** Plan produced from discovery; execute applies this to tx. */
 export type RecablePlan = {
   revertPayload: RevertPayload;
-  directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel: NexusEntity<"centroidChannel"> }[];
+  directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef }[];
   masterChainSpec: MasterChainSpec | null;
-  auxSpecByKey: { aux1?: AuxCableSpec; aux2?: AuxCableSpec };
+  auxSpecsPerSubmixer: SubmixerAuxSpecEntry[];
+  lastMixerId: string | null;
   centroidAuxSendGainByKey: { aux1?: { value: number; location: NexusLocation }; aux2?: { value: number; location: NexusLocation } };
   topoOrder: NexusEntity[];
   childSubmixersMap: Map<string, string[]>;
   submixerSpecBySubmixerId: Map<string, SubmixerCreationSpec>;
   cablesToRemove: NexusEntity<"desktopAudioCable">[];
-  lastCentroid: NexusEntity<"centroid">;
+  lastCentroid: NexusEntity<"centroid"> | null;
   centroidChannels: NexusEntity<"centroidChannel">[];
   cablesWithChannelCount: number;
+  mergerGroupSpec: MergerGroupSpec | null;
+  mergerSubmixerSpecs: Map<string, SubmixerCreationSpec>;
 };

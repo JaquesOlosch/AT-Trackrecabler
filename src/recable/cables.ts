@@ -2,6 +2,10 @@ import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/d
 import type { AuxCableSpec, RemovedCable, SerializedLocation } from "./types";
 import { locationKey, locationMatches, serializedLocation } from "./tracing";
 
+function locationMatchesSerialized(loc: NexusLocation, ser: SerializedLocation): boolean {
+  return loc.entityId === ser.entityId && loc.fieldIndex.length === ser.fieldIndex.length && loc.fieldIndex.every((n, i) => n === ser.fieldIndex[i]);
+}
+
 /** Creates cable only if both fromSocket and toSocket are unused. Returns created cable id or null if skipped. */
 export function createCableIfSocketsFree(
   tx: { create: (type: "desktopAudioCable", props: { fromSocket: NexusLocation; toSocket: NexusLocation; colorIndex: number }) => { id: string } },
@@ -98,17 +102,26 @@ export function wireAuxCables(
     }
     const id = createCableIfSocketsFree(tx, fromSocket, newAuxReturnLoc, rem.colorIndex, usedFromSocketKeys, usedToSocketKeys, warnings, `${logPrefix} aux return cable skipped`);
     if (id) createdCableIds.push(id);
-    break;
   }
   return createdCableIds;
 }
 
-/** Get NexusLocation from an existing entity's field (by entityId + fieldIndex). Uses SDK's _resolveField when available. */
+/** Get NexusLocation from an existing entity's field (by entityId + fieldIndex). Uses SDK's _resolveField when available, else scans entity fields. */
 export function getLocationFromEntity(entities: EntityQuery, loc: SerializedLocation): NexusLocation | null {
   const entity = entities.getEntity(loc.entityId);
   if (!entity) return null;
   const resolve = (entity as { _resolveField?(fieldIndex: ReadonlyArray<number>): { location: NexusLocation } })._resolveField;
-  if (typeof resolve !== "function") return null;
-  const field = resolve.call(entity, loc.fieldIndex);
-  return field?.location ?? null;
+  if (typeof resolve === "function") {
+    const field = resolve.call(entity, loc.fieldIndex);
+    return field?.location ?? null;
+  }
+  type FieldWithLoc = { location?: NexusLocation; value?: { location?: NexusLocation } };
+  const fields = (entity as { fields?: Record<string, FieldWithLoc> }).fields;
+  if (!fields) return null;
+  for (const key of Object.keys(fields)) {
+    const f = fields[key];
+    const location = f?.location ?? f?.value?.location;
+    if (location && locationMatchesSerialized(location, loc)) return location;
+  }
+  return null;
 }

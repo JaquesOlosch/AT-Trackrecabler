@@ -6,12 +6,27 @@ import {
 } from "@audiotool/nexus";
 import { recableOldCentroidToMixer, revertRecable, type RevertPayload } from "./recable";
 
+const STUDIO_BASE = "https://beta.audiotool.com/studio";
+
+/** Extract project id from a studio URL (e.g. …?project=id or …/studio/id). Not exported by SDK main entry in 0.0.12. */
+function getProjectIdFromUrl(projectUrl: string): string | null {
+  try {
+    const u = new URL(projectUrl);
+    const fromQuery = u.searchParams.get("project");
+    if (fromQuery) return fromQuery.trim() || null;
+    const pathMatch = /\/studio\/([^/?#]+)/.exec(u.pathname);
+    return pathMatch ? pathMatch[1].trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 const CLIENT_ID = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID ?? "";
 const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.0.0.1:5173/";
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
 
 const TOOL_DESCRIPTION = `
-**Recable centroid → mixer** migrates an old Centroid-based mix to the integrated mixer in one step.
+**Recable centroid → mixer** migrates an old Centroid-based mix to the integrated mixer in one step. The app always works on a **remix** (copy) of your project, so the original is never modified.
 
 **Channels** — Finds the centroid feeding the mixer (directly or via a device chain). Every cable into the centroid’s channel inputs becomes a new mixer channel. The centroid sum and any insert chain (e.g. compressor) are wired into the **master insert** (sum → new channel, chain → insert send/return).
 
@@ -31,9 +46,9 @@ const TOOL_DESCRIPTION_NOT = `
 
 const TOOL_HOW_TO_USE = `
 1. **Log in** with Audiotool, then open an old-style project (Centroid output → single mixer channel) in the studio and copy the project URL.
-2. **Connect** — Paste URL, click Connect, wait for **Connected**.
-3. **Recable** — Click **Recable centroid → mixer**. Changes sync live.
-4. **Undo** — Click **Undo recable** to put the mix back as before. If you changed the project in between, a few cables might not be restored; the log will tell you.
+2. **Connect** — Paste the **original** project URL and click **Create remix & connect**. The app creates a **copy** of the project (remix) and connects to that copy. Your original project is never modified.
+3. **Recable** — Click **Recable centroid → mixer**. Changes apply only in the remix; the original stays untouched.
+4. **Undo** — Click **Undo recable** to put the remix back as before recabling. If you changed the remix in between, a few cables might not be restored; the log will tell you.
 5. Check the log for any warnings (e.g. skipped cables or automation).
 `;
 
@@ -63,7 +78,7 @@ export async function createApp(): Promise<HTMLElement> {
   const subtitle = document.createElement("p");
   subtitle.className = "subtitle";
   subtitle.textContent =
-    "Connect an old-style Audiotool project and recable the centroid’s channel inputs to new mixer channels.";
+    "Create a remix (copy) of an old-style project, then recable the centroid → mixer in the copy. The original project is never modified.";
   container.appendChild(subtitle);
 
   if (!CLIENT_ID) {
@@ -155,7 +170,7 @@ function renderProjectConnect(
   const card = document.createElement("div");
   card.className = "card";
   const label = document.createElement("label");
-  label.textContent = "Project URL (from beta.audiotool.com)";
+  label.textContent = "Original project URL (from beta.audiotool.com)";
   card.appendChild(label);
   const input = document.createElement("input");
   input.type = "url";
@@ -166,19 +181,61 @@ function renderProjectConnect(
   card.appendChild(statusEl);
   const connectBtn = document.createElement("button");
   connectBtn.className = "btn-primary";
-  connectBtn.textContent = "Connect to project";
+  connectBtn.textContent = "Create remix & connect";
   connectBtn.onclick = async () => {
     const projectUrl = input.value.trim();
     if (!projectUrl) {
-      statusEl.textContent = "Enter a project URL.";
+      statusEl.textContent = "Enter the original project URL.";
       statusEl.className = "status error";
       return;
     }
-    statusEl.textContent = "Connecting…";
+    statusEl.textContent = "Creating remix (copy of project)…";
     statusEl.className = "status";
     connectBtn.disabled = true;
     try {
-      const doc = await client.createSyncedDocument({ project: projectUrl });
+      const projectId = getProjectIdFromUrl(projectUrl);
+      if (!projectId) {
+        statusEl.textContent = "Could not read project id from URL.";
+        statusEl.className = "status error";
+        connectBtn.disabled = false;
+        return;
+      }
+      const copyOfProjectName =
+        projectId.startsWith("projects/") ? projectId : `projects/${projectId}`;
+
+      let displayName = "Recable copy";
+      const getRes = await client.api.projectService.getProject({ name: copyOfProjectName });
+      if (!(getRes instanceof Error) && getRes.project?.displayName?.trim()) {
+        displayName = `${getRes.project.displayName.trim()} recabled`;
+      }
+
+      const createRes = await client.api.projectService.createProject({
+        project: {
+          copyOfProjectName,
+          displayName,
+        },
+      });
+      if (createRes instanceof Error) {
+        statusEl.textContent = createRes.message;
+        statusEl.className = "status error";
+        connectBtn.disabled = false;
+        return;
+      }
+      const newProject = createRes.project;
+      if (!newProject?.name) {
+        statusEl.textContent = "Remix created but no project id returned.";
+        statusEl.className = "status error";
+        connectBtn.disabled = false;
+        return;
+      }
+      const remixId =
+        newProject.name.startsWith("projects/") ? newProject.name.slice("projects/".length) : newProject.name;
+      const remixUrl = `${STUDIO_BASE}?project=${encodeURIComponent(remixId)}`;
+
+      window.open(remixUrl, "_blank", "noopener,noreferrer,width=1280,height=800,left=100,top=100");
+
+      statusEl.textContent = "Connecting to remix…";
+      const doc = await client.createSyncedDocument({ project: remixUrl });
       renderDocumentUI(container, doc, client);
       card.remove();
     } catch (err) {
@@ -229,7 +286,7 @@ function renderDocumentUI(
   doc
     .start()
     .then(() => {
-      statusEl.textContent = "Connected — recable old centroid below.";
+      statusEl.textContent = "Connected to remix — recable old centroid below.";
       statusEl.className = "status connected";
     })
     .catch((err) => {

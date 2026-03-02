@@ -1,5 +1,5 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
-import { locationMatches } from "../tracing";
+import { locationMatches, locationKey } from "../tracing";
 import { CENTROID_TO_MIXER_PARAM_MAP } from "../constants";
 import { getMixerMidEqParamPath } from "./eq";
 
@@ -44,23 +44,21 @@ export function copyAutomationBetweenLocations(
 
   if (tracksForSource.length === 0) return result;
 
+  const isEnabled = (tracksForSource[0].fields.isEnabled as { value: boolean }).value;
+  const newTrack = tx.create("automationTrack", {
+    automatedParameter: targetLocation,
+    orderAmongTracks: nextOrderRef.value++,
+    isEnabled,
+  });
+  result.trackIds.push(newTrack.id);
+  const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
+
   for (const oldTrack of tracksForSource) {
     const allRegions = entities.ofTypes("automationRegion").get() as NexusEntity<"automationRegion">[];
     const regionsForTrack = allRegions.filter((region) => {
       const trackRef = region.fields.track as { value?: { entityId: string } };
       return trackRef?.value?.entityId === oldTrack.id;
     });
-
-    const newTrack = tx.create("automationTrack", {
-      automatedParameter: targetLocation,
-      orderAmongTracks: nextOrderRef.value++,
-      isEnabled: (oldTrack.fields.isEnabled as { value: boolean }).value,
-    });
-    result.trackIds.push(newTrack.id);
-
-    if (regionsForTrack.length === 0) continue;
-
-    const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
 
     for (const oldRegion of regionsForTrack) {
       const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
@@ -122,6 +120,7 @@ export function copyAutomationBetweenLocations(
 
 /**
  * Copy aux send automation from a CentroidChannel to a MixerAuxRoute.
+ * Uses usedAutomationTargetKeys to avoid creating multiple tracks for the same parameter (Nexus allows at most one).
  */
 export function copyAuxAutomationForChannel(
   entities: EntityQuery,
@@ -129,7 +128,8 @@ export function copyAuxAutomationForChannel(
   centroidChannel: NexusEntity<"centroidChannel">,
   auxRoutes: { aux1?: NexusEntity<"mixerAuxRoute">; aux2?: NexusEntity<"mixerAuxRoute"> },
   nextOrderRef: { value: number },
-  warnings: string[]
+  warnings: string[],
+  usedAutomationTargetKeys: Set<string>
 ): { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] } {
   const result = { trackIds: [] as string[], collectionIds: [] as string[], regionIds: [] as string[], eventIds: [] as string[] };
 
@@ -160,23 +160,27 @@ export function copyAuxAutomationForChannel(
       continue;
     }
 
+    const gainKey = locationKey(routeGainLoc);
+    if (usedAutomationTargetKeys.has(gainKey)) {
+      continue;
+    }
+    usedAutomationTargetKeys.add(gainKey);
+
+    const isEnabled = (tracksForField[0].fields.isEnabled as { value: boolean }).value;
+    const newTrack = tx.create("automationTrack", {
+      automatedParameter: routeGainLoc,
+      orderAmongTracks: nextOrderRef.value++,
+      isEnabled,
+    });
+    result.trackIds.push(newTrack.id);
+    const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
+
     for (const oldTrack of tracksForField) {
       const allRegions = entities.ofTypes("automationRegion").get() as NexusEntity<"automationRegion">[];
       const regionsForTrack = allRegions.filter((region) => {
         const trackRef = region.fields.track as { value?: { entityId: string } };
         return trackRef?.value?.entityId === oldTrack.id;
       });
-
-      const newTrack = tx.create("automationTrack", {
-        automatedParameter: routeGainLoc,
-        orderAmongTracks: nextOrderRef.value++,
-        isEnabled: (oldTrack.fields.isEnabled as { value: boolean }).value,
-      });
-      result.trackIds.push(newTrack.id);
-
-      if (regionsForTrack.length === 0) continue;
-
-      const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
 
       for (const oldRegion of regionsForTrack) {
         const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
@@ -258,6 +262,9 @@ export function copyAutomationForChannel(
 
   if (tracksForChannel.length === 0) return result;
 
+  type TrackAndRegions = { oldTrack: NexusEntity<"automationTrack">; regionsForTrack: NexusEntity<"automationRegion">[] };
+  const byTargetKey = new Map<string, { targetLoc: NexusLocation; items: TrackAndRegions[] }>();
+
   for (const oldTrack of tracksForChannel) {
     const automatedParam = oldTrack.fields.automatedParameter as { value: NexusLocation };
     const paramLoc = automatedParam.value;
@@ -296,80 +303,84 @@ export function copyAutomationForChannel(
       continue;
     }
 
+    const targetKey = locationKey(targetLoc);
     const allRegions = entities.ofTypes("automationRegion").get() as NexusEntity<"automationRegion">[];
     const regionsForTrack = allRegions.filter((region) => {
       const trackRef = region.fields.track as { value?: { entityId: string } };
       return trackRef?.value?.entityId === oldTrack.id;
     });
 
-    if (regionsForTrack.length === 0) {
-      const newTrack = tx.create("automationTrack", {
-        automatedParameter: targetLoc,
-        orderAmongTracks: nextOrderRef.value++,
-        isEnabled: (oldTrack.fields.isEnabled as { value: boolean }).value,
-      });
-      result.trackIds.push(newTrack.id);
-      continue;
+    let entry = byTargetKey.get(targetKey);
+    if (!entry) {
+      entry = { targetLoc, items: [] };
+      byTargetKey.set(targetKey, entry);
     }
+    entry.items.push({ oldTrack, regionsForTrack });
+  }
 
+  for (const { targetLoc, items } of byTargetKey.values()) {
+    const first = items[0];
+    const isEnabled = (first.oldTrack.fields.isEnabled as { value: boolean }).value;
     const newTrack = tx.create("automationTrack", {
       automatedParameter: targetLoc,
       orderAmongTracks: nextOrderRef.value++,
-      isEnabled: (oldTrack.fields.isEnabled as { value: boolean }).value,
+      isEnabled,
     });
     result.trackIds.push(newTrack.id);
     const newTrackLoc = newTrack.location ?? { entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation;
 
-    for (const oldRegion of regionsForTrack) {
-      const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
-      const oldCollectionLoc = collectionRef.value;
-      const oldCollectionEntity = entities.getEntity(oldCollectionLoc.entityId);
+    for (const { regionsForTrack } of items) {
+      for (const oldRegion of regionsForTrack) {
+        const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
+        const oldCollectionLoc = collectionRef.value;
+        const oldCollectionEntity = entities.getEntity(oldCollectionLoc.entityId);
 
-      const newCollection = tx.create("automationCollection", {});
-      result.collectionIds.push(newCollection.id);
-      const newCollectionLoc = newCollection.location ?? { entityId: newCollection.id, fieldIndex: [] } as unknown as NexusLocation;
+        const newCollection = tx.create("automationCollection", {});
+        result.collectionIds.push(newCollection.id);
+        const newCollectionLoc = newCollection.location ?? { entityId: newCollection.id, fieldIndex: [] } as unknown as NexusLocation;
 
-      const regionData = oldRegion.fields.region as {
-        fields?: {
-          positionTicks?: { value: number };
-          durationTicks?: { value: number };
-          collectionOffsetTicks?: { value: number };
-          loopOffsetTicks?: { value: number };
-          loopDurationTicks?: { value: number };
-          isEnabled?: { value: boolean };
+        const regionData = oldRegion.fields.region as {
+          fields?: {
+            positionTicks?: { value: number };
+            durationTicks?: { value: number };
+            collectionOffsetTicks?: { value: number };
+            loopOffsetTicks?: { value: number };
+            loopDurationTicks?: { value: number };
+            isEnabled?: { value: boolean };
+          };
         };
-      };
-      const rf = regionData.fields ?? {};
-      const newRegion = tx.create("automationRegion", {
-        track: newTrackLoc,
-        collection: newCollectionLoc,
-        region: {
-          positionTicks: rf.positionTicks?.value ?? 0,
-          durationTicks: rf.durationTicks?.value ?? 15360,
-          collectionOffsetTicks: rf.collectionOffsetTicks?.value ?? 0,
-          loopOffsetTicks: rf.loopOffsetTicks?.value ?? 0,
-          loopDurationTicks: rf.loopDurationTicks?.value ?? 15360,
-          isEnabled: rf.isEnabled?.value ?? true,
-        },
-      });
-      result.regionIds.push(newRegion.id);
-
-      if (oldCollectionEntity) {
-        const allEvents = entities.ofTypes("automationEvent").get() as NexusEntity<"automationEvent">[];
-        const eventsForCollection = allEvents.filter((event) => {
-          const eventCollectionRef = event.fields.collection as { value?: { entityId: string } };
-          return eventCollectionRef?.value?.entityId === oldCollectionEntity.id;
+        const rf = regionData.fields ?? {};
+        const newRegion = tx.create("automationRegion", {
+          track: newTrackLoc,
+          collection: newCollectionLoc,
+          region: {
+            positionTicks: rf.positionTicks?.value ?? 0,
+            durationTicks: rf.durationTicks?.value ?? 15360,
+            collectionOffsetTicks: rf.collectionOffsetTicks?.value ?? 0,
+            loopOffsetTicks: rf.loopOffsetTicks?.value ?? 0,
+            loopDurationTicks: rf.loopDurationTicks?.value ?? 15360,
+            isEnabled: rf.isEnabled?.value ?? true,
+          },
         });
+        result.regionIds.push(newRegion.id);
 
-        for (const oldEvent of eventsForCollection) {
-          const newEvent = tx.create("automationEvent", {
-            collection: newCollectionLoc,
-            positionTicks: (oldEvent.fields.positionTicks as { value: number }).value,
-            value: (oldEvent.fields.value as { value: number }).value,
-            slope: (oldEvent.fields.slope as { value: number }).value,
-            interpolation: (oldEvent.fields.interpolation as { value: number }).value,
+        if (oldCollectionEntity) {
+          const allEvents = entities.ofTypes("automationEvent").get() as NexusEntity<"automationEvent">[];
+          const eventsForCollection = allEvents.filter((event) => {
+            const eventCollectionRef = event.fields.collection as { value?: { entityId: string } };
+            return eventCollectionRef?.value?.entityId === oldCollectionEntity.id;
           });
-          result.eventIds.push(newEvent.id);
+
+          for (const oldEvent of eventsForCollection) {
+            const newEvent = tx.create("automationEvent", {
+              collection: newCollectionLoc,
+              positionTicks: (oldEvent.fields.positionTicks as { value: number }).value,
+              value: (oldEvent.fields.value as { value: number }).value,
+              slope: (oldEvent.fields.slope as { value: number }).value,
+              interpolation: (oldEvent.fields.interpolation as { value: number }).value,
+            });
+            result.eventIds.push(newEvent.id);
+          }
         }
       }
     }

@@ -48,7 +48,7 @@ describe("runDiscovery", () => {
     const result = runDiscovery(entities as never);
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toContain("No centroid found");
+      expect(result.error).toContain("No mixer");
     }
   });
 });

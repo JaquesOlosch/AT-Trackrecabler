@@ -18,19 +18,24 @@ export function buildPlan(_entities: unknown, discovery: Extract<DiscoveryResult
     removedChainLast: discovery.removedChainLast,
     removedAuxCables: discovery.removedAuxCables,
     removedSubmixerCables: discovery.removedSubmixerCables,
+    removedMergerInputCables: discovery.removedMergerInputCables,
   };
 
   const centroidAuxSendGainByKey: RecablePlan["centroidAuxSendGainByKey"] = {};
-  for (const auxKey of ["aux1", "aux2"] as const) {
-    const info = getCentroidAuxSendGain(discovery.lastCentroid, auxKey);
-    if (info) centroidAuxSendGainByKey[auxKey] = info;
+  if (discovery.lastCentroid) {
+    for (const auxKey of ["aux1", "aux2"] as const) {
+      const info = getCentroidAuxSendGain(discovery.lastCentroid, auxKey);
+      if (info) centroidAuxSendGainByKey[auxKey] = info;
+    }
   }
 
   return {
     revertPayload,
-    directCables: discovery.directCables.map((c) => ({ cable: c.cable, centroidChannel: c.centroidChannel })),
+    directCables: discovery.directCables.map((c) => ({ cable: c.cable, centroidChannel: c.centroidChannel, channelRef: c.channelRef })),
     masterChainSpec: discovery.masterChainSpec,
-    auxSpecByKey: discovery.auxSpecByKey,
+    mergerGroupSpec: discovery.mergerGroupSpec,
+    auxSpecsPerSubmixer: discovery.auxSpecsPerSubmixer,
+    lastMixerId: discovery.lastMixerId,
     centroidAuxSendGainByKey,
     topoOrder: discovery.topoOrder,
     childSubmixersMap: discovery.childSubmixersMap,
@@ -39,5 +44,6 @@ export function buildPlan(_entities: unknown, discovery: Extract<DiscoveryResult
     lastCentroid: discovery.lastCentroid,
     centroidChannels: discovery.centroidChannels,
     cablesWithChannelCount: discovery.cablesWithChannel.length,
+    mergerSubmixerSpecs: discovery.mergerSubmixerSpecs,
   };
 }

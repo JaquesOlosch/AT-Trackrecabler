@@ -50,9 +50,9 @@ Open **http://127.0.0.1:5173/** in your browser (use this exact URL so OAuth red
 ### 4. Use the app
 
 1. Click **Login with Audiotool** and authorize the app.
-2. Open an **old-style** project on [beta.audiotool.com](https://beta.audiotool.com/) (one where a Centroid’s output is cabled to a single mixer channel), copy its URL.
-3. Paste the project URL into the app and click **Connect to project**.
-4. Click **Recable centroid → mixer**. The app finds the centroid feeding the single mixer channel, then moves every cable that fed the centroid’s channel inputs to new mixer channels. Changes sync in real time with the DAW.
+2. Open the **original** old-style project on [beta.audiotool.com](https://beta.audiotool.com/) (one where a Centroid’s output is cabled to a single mixer channel), copy its URL.
+3. Paste that URL into the app and click **Create remix & connect**. The app creates a **copy** of the project (remix) via the Audiotool API and connects to the remix. **The original project is never modified.**
+4. Click **Recable centroid → mixer**. The app finds the centroid feeding the single mixer channel, then moves every cable that fed the centroid’s channel inputs to new mixer channels. All changes apply only to the remix; the original stays untouched. Changes sync in real time with the DAW.
 
 ## Scripts
 
@@ -86,6 +86,10 @@ The studio UI may not always label which centroid *channel* (track) an automatio
   - the **`centroidChannel`** entity itself (e.g. for a parameter stored directly on the channel), or
   - a **sub-entity** of that channel (e.g. a fader-parameters or EQ entity referenced by the channel).
 - So “which centroid track is automated” is: the **centroid channel that owns the entity** in `automatedParameter.entityId`. If that entity is a sub-entity, the studio can resolve it to the parent `centroidChannel` (e.g. by finding which centroid channel references that entity). The channel’s **index** among the centroid’s channels (or its entity id) can then be used for a label like “Centroid 3 – Post Gain”.
+
+## SDK version
+
+This app uses **@audiotool/nexus@^0.0.11**. The [documentation](https://developer.audiotool.com/js-package-documentation/) references v0.0.12; that version currently pulls Node-only dependencies into the browser build and breaks `vite build`. We stay on 0.0.11 until the SDK provides a browser-safe build. Our code is compatible with the documented API (createSyncedDocument, projectService.createProject, etc.).
 
 ## Links
 
