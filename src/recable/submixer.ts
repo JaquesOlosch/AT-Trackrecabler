@@ -31,7 +31,7 @@ export function getCentroidAuxSendGain(
 }
 
 /**
- * Submixer aux locations. Centroid/Kobolt: aux1/aux2 with nested fields. Minimixer: single aux via auxSendOutput/auxReturnInput.
+ * Submixer aux locations. Centroid: aux1/aux2 with nested fields. Minimixer: single aux via auxSendOutput/auxReturnInput. Kobolt has no aux.
  */
 export function getSubmixerAuxLocations(
   submixer: NexusEntity,

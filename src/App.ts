@@ -26,50 +26,83 @@ const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
 
 const TOOL_DESCRIPTION = `
-**Recable centroid → mixer** migrates an old Centroid-based mix to the integrated mixer in one step. The app always works on a **remix** (copy) of your project, so the original is never modified.
+**Recable** migrates an old-style mix (Centroid, Kobolt, Minimixer, Merger) to the new integrated mixer in one step. The app always works on a **remix** (copy) of your project; the original is never modified.
 
-**Channels** — Finds the centroid feeding the mixer (directly or via a device chain). Every cable into the centroid’s channel inputs becomes a new mixer channel. The centroid sum and any insert chain (e.g. compressor) are wired into the **master insert** (sum → new channel, chain → insert send/return).
+**What happens** — The app finds the **last mixer** in the chain (the device whose output feeds the single mixer channel). It then recables everything into the new mixer: each input becomes a channel, submixers become groups (with correct nesting), aux effect chains get their own mixer aux strips, and the main chain goes through the master insert.
 
-**Per-channel** — Each new channel gets: fader (post gain), pan, mute, solo; for Centroid sources also pre-gain (−8 dB). EQ is mapped from the 3-band Centroid EQ to the 4-band mixer EQ (low/high shelf fixed; mid → low-mid or high-mid by frequency, gap 700–1600 Hz uses nearest band).
+**Channels** — Every cable that fed the last mixer’s inputs becomes a **new mixer channel**. Each channel gets fader (post gain), pan, mute, solo; for Centroid sources also pre-gain (−8 dB). EQ is mapped from the 3-band Centroid EQ to the 4-band mixer EQ. The last mixer’s sum and any insert chain (e.g. compressor) are wired into the **master insert**.
 
-**Aux 1 & 2** — If the centroid aux is used, the tool creates a new mixer aux, moves the effect chain to its insert, and routes each new channel to it with the original send level. The centroid’s **global aux send gain** is copied to the mixer aux pre-gain.
+**Groups and hierarchy** — The **last mixer** becomes a **top-level group** in the new mixer. Any **submixer** that fed it (Centroid, Kobolt, Minimixer) becomes a **subgroup** inside that group. If a submixer had another cabled into it (e.g. Kobolt into Centroid), that becomes a **group inside a group**. So you get one root group containing subgroups, which can contain further subgroups. If the last device is an **Audio Merger**, the app creates one merger group at the top and each merger input that came from a submixer becomes a subgroup (again with full nesting).
 
-**Submixers** — Cables from Kobolt, Minimixer or nested Centroid become a **mixer group** each: channels inside the group, same pan/pre-gain/eq/aux sends; device chains at the submixer output go to the group’s insert. Submixer auxes get new mixer auxes and routes.
+**Aux** — For every aux that was used (Centroid aux1/aux2, Minimixer aux; Kobolt has no aux), the app creates a **new mixer aux** for that source, reconnects the effect chain to it, and routes the right channels with the original send levels. Each Centroid or Minimixer gets its own aux strip(s), so multiple submixers with aux FX all stay correct. Global aux send gain is copied to the mixer aux pre-gain where applicable.
 
-**Automation** — Fader, pan, pre-gain, mute, solo, EQ and aux send automation are copied to the new mixer channels and aux routes (regions and events unchanged). Mid EQ automation maps to low-mid or high-mid; aux send automation → mixerAuxRoute gain; centroid aux send gain automation → mixer aux pre-gain.
+**Automation** — Fader, pan, pre-gain, mute, solo, EQ and aux send automation are copied to the new mixer channels and aux routes (regions and events unchanged).
 `;
 
 const TOOL_DESCRIPTION_NOT = `
 **EQ sound** — The mixer’s 4-band EQ behaves differently; you may need to tweak after recabling.
 
-**Undo** — Undo puts the mix back the way it was before recabling. If you changed the project in the meantime, a few cables might not come back; you’ll see a note in the log.`;
+**Undo** — Undo restores the remix to the state before recabling. If you edited the remix in between, some cables might not be restored; the log will note any issues.`;
 
 const TOOL_HOW_TO_USE = `
-1. **Log in** with Audiotool, then open an old-style project (Centroid output → single mixer channel) in the studio and copy the project URL.
-2. **Connect** — Paste the **original** project URL and click **Create remix & connect**. The app creates a **copy** of the project (remix) and connects to that copy. Your original project is never modified.
-3. **Recable** — Click **Recable centroid → mixer**. Changes apply only in the remix; the original stays untouched.
-4. **Undo** — Click **Undo recable** to put the remix back as before recabling. If you changed the remix in between, a few cables might not be restored; the log will tell you.
-5. Check the log for any warnings (e.g. skipped cables or automation).
+1. **Log in** with Audiotool, then open your old-style project (Centroid, Kobolt, Minimixer or Merger → single mixer channel) in the studio and copy the project URL.
+2. **Connect** — Paste the **original** project URL and click **Create copy & connect**. The app creates a **copy** and connects to it. The original is never modified.
+3. **Recable** — Click **Recable**. The app recables the whole chain into the new mixer (channels, groups, aux, master insert). Changes apply only in the remix.
+4. **Undo** — Click **Undo recable** to revert the recable in the remix. Check the log for any warnings.
 `;
+
+function openWhatThisToolDoesModal(): void {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "modal-title");
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal-dialog";
+  const doesHtml = TOOL_DESCRIPTION.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+  const notHtml = TOOL_DESCRIPTION_NOT.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+  dialog.innerHTML = `
+    <div class="modal-header">
+      <h2 id="modal-title">What this tool does</h2>
+      <button type="button" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <section class="modal-section">
+        <div class="tool-description-body">${doesHtml}</div>
+      </section>
+      <section class="modal-section modal-section-not">
+        <h3>What this tool does NOT do</h3>
+        <div class="tool-description-body">${notHtml}</div>
+      </section>
+    </div>
+  `;
+
+  const close = (): void => {
+    overlay.remove();
+    document.body.style.overflow = "";
+  };
+
+  dialog.querySelector(".modal-close")?.addEventListener("click", close);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+}
 
 export async function createApp(): Promise<HTMLElement> {
   const container = document.createElement("div");
   container.className = "app";
 
-  const descriptionCard = document.createElement("section");
-  descriptionCard.className = "card tool-description";
-  descriptionCard.innerHTML = `<h2>What this tool does</h2><div class="tool-description-body">${TOOL_DESCRIPTION.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</div>`;
-  container.appendChild(descriptionCard);
-
-  const notCard = document.createElement("section");
-  notCard.className = "card tool-description tool-description-not";
-  notCard.innerHTML = `<h2>What this tool does NOT do</h2><div class="tool-description-body">${TOOL_DESCRIPTION_NOT.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</div>`;
-  container.appendChild(notCard);
-
   const howToCard = document.createElement("section");
-  howToCard.className = "card tool-description";
+  howToCard.className = "card tool-description how-to-card";
   howToCard.innerHTML = `<h2>How to use</h2><div class="tool-description-body">${TOOL_HOW_TO_USE.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</div>`;
-  container.appendChild(howToCard);
 
   const title = document.createElement("h1");
   title.textContent = "Track Recabler";
@@ -78,8 +111,15 @@ export async function createApp(): Promise<HTMLElement> {
   const subtitle = document.createElement("p");
   subtitle.className = "subtitle";
   subtitle.textContent =
-    "Create a remix (copy) of an old-style project, then recable the centroid → mixer in the copy. The original project is never modified.";
+    "Create a remix of an old-style project (Centroid, Kobolt, Minimixer, Merger), then recable the whole chain into the new integrated mixer. The original project is never modified.";
   container.appendChild(subtitle);
+
+  const infoBtn = document.createElement("button");
+  infoBtn.type = "button";
+  infoBtn.className = "btn-secondary btn-info";
+  infoBtn.textContent = "What does this tool do?";
+  infoBtn.addEventListener("click", openWhatThisToolDoesModal);
+  container.appendChild(infoBtn);
 
   if (!CLIENT_ID) {
     const card = document.createElement("div");
@@ -90,6 +130,7 @@ export async function createApp(): Promise<HTMLElement> {
       <pre>VITE_AUDIOTOOL_CLIENT_ID=your_client_id</pre>
     `;
     container.appendChild(card);
+    container.appendChild(howToCard);
     return container;
   }
 
@@ -105,6 +146,7 @@ export async function createApp(): Promise<HTMLElement> {
     renderLoggedOut(container, loginStatus);
   }
 
+  container.appendChild(howToCard);
   return container;
 }
 
@@ -181,7 +223,7 @@ function renderProjectConnect(
   card.appendChild(statusEl);
   const connectBtn = document.createElement("button");
   connectBtn.className = "btn-primary";
-  connectBtn.textContent = "Create remix & connect";
+  connectBtn.textContent = "Create copy & connect";
   connectBtn.onclick = async () => {
     const projectUrl = input.value.trim();
     if (!projectUrl) {
@@ -286,7 +328,7 @@ function renderDocumentUI(
   doc
     .start()
     .then(() => {
-      statusEl.textContent = "Connected to remix — recable old centroid below.";
+      statusEl.textContent = "Connected to remix — recable below.";
       statusEl.className = "status connected";
     })
     .catch((err) => {
@@ -299,7 +341,7 @@ function renderDocumentUI(
   let lastRevertPayload: RevertPayload | null = null;
   const recableBtn = document.createElement("button");
   recableBtn.className = "btn-primary";
-  recableBtn.textContent = "Recable centroid → mixer";
+  recableBtn.textContent = "Recable";
   recableBtn.onclick = async () => {
     addLog("Recabling…", "info");
     recableBtn.disabled = true;
@@ -369,4 +411,6 @@ function renderDocumentUI(
   card.appendChild(actions);
   card.appendChild(logEl);
   container.appendChild(card);
+  const howTo = container.querySelector(".how-to-card");
+  if (howTo) container.appendChild(howTo);
 }

@@ -2,7 +2,16 @@
 
 A browser app that connects to [Audiotool](https://www.audiotool.com/) projects via the [Audiotool SDK](https://developer.audiotool.com/) and **recables old-style projects** so they use the new integrated mixer.
 
-In the old Audiotool, there was a single output on the desktop and users summed signals through a desktop mixer called **Centroid**. When you open an old project in the new DAW, the centroid’s output is routed to **one** channel on the new integrated mixer. This tool finds that “last” centroid (the one feeding that single mixer channel), then **recables every cable** that was connected to the centroid’s channel inputs to **new mixer channels** instead, so each source gets its own channel.
+## What it does
+
+In old Audiotool projects, the desktop had a single output. Signals were summed through desktop mixers: **Centroid**, **Kobolt**, **Minimixer**, and sometimes combined via an **Audio Merger**. In the new DAW, that chain ends in **one** channel on the integrated mixer. The Recabler finds the **last mixer** in that chain (the one feeding the single mixer channel), then **recables the whole setup** into the new mixer:
+
+- **Channels** — Every cable that fed the last mixer’s inputs becomes its own **mixer channel**. Fader, pan, mute, solo, and (for Centroid) pre-gain and EQ are preserved. Automation is copied to the new channels.
+- **Groups and hierarchy** — The **last mixer** becomes a **top-level group** in the new mixer. Any **submixer** that fed it (e.g. a Centroid or Kobolt) becomes a **subgroup** inside that group. If a submixer had another submixer cabled into it (e.g. Kobolt → Centroid), that nesting is preserved: **group inside group**. So you get one root group (last mixer) containing subgroups (Centroids, etc.), and those can contain further subgroups (Kobolt, Minimixer).
+- **Merger** — If the last device is an **Audio Merger**, the app creates **one merger group** at the top. Each input that came from a submixer (e.g. two Centroids) becomes a **subgroup** inside the merger group, again with full nesting (e.g. Centroid → Kobolt → Minimixer).
+- **Master insert** — The chain from the last mixer’s output to the stagebox (e.g. through FX) is wired to the **master insert** (send/return). Insert chains on submixers (e.g. Centroid insert → reverb) become the **group insert** of the corresponding subgroup.
+- **Aux** — For every **aux** that was used (Centroid aux1/aux2, Minimixer aux; Kobolt has no aux), the app creates a **new mixer aux** for that source, reconnects the effect chain to it, and routes the right channels to it with the original send levels. Each Centroid or Minimixer gets its own aux strip(s), so multiple submixers with aux FX all stay correct.
+- **Undo** — All changes are applied only to a **remix** (copy) of your project. You can **undo** the recable to restore the previous cabling; the original project is never modified.
 
 ## Prerequisites
 
@@ -50,9 +59,10 @@ Open **http://127.0.0.1:5173/** in your browser (use this exact URL so OAuth red
 ### 4. Use the app
 
 1. Click **Login with Audiotool** and authorize the app.
-2. Open the **original** old-style project on [beta.audiotool.com](https://beta.audiotool.com/) (one where a Centroid’s output is cabled to a single mixer channel), copy its URL.
-3. Paste that URL into the app and click **Create remix & connect**. The app creates a **copy** of the project (remix) via the Audiotool API and connects to the remix. **The original project is never modified.**
-4. Click **Recable centroid → mixer**. The app finds the centroid feeding the single mixer channel, then moves every cable that fed the centroid’s channel inputs to new mixer channels. All changes apply only to the remix; the original stays untouched. Changes sync in real time with the DAW.
+2. Open the **original** old-style project on [beta.audiotool.com](https://beta.audiotool.com/) (one where a Centroid, Kobolt, Minimixer or Merger feeds a single mixer channel), and copy its project URL.
+3. Paste that URL into the app and click **Create copy & connect**. The app creates a **copy** of the project and connects to it. **The original project is never modified.**
+4. Click **Recable**. The app finds the last mixer in the chain, then recables everything into the new integrated mixer: new channels, groups (with correct nesting), aux strips, and master insert. All changes apply only to the remix; the original stays untouched. Changes sync in real time with the DAW.
+5. Use **Undo recable** to revert the recable in the remix if needed.
 
 ## Scripts
 

@@ -22,7 +22,7 @@ export const CHANNEL_ENTITY_TYPES = new Set([
   "audioMerger",
 ]);
 
-/** Aux key: centroid has aux1/aux2; minimixer has a single aux via auxSendOutput/auxReturnInput. */
+/** Aux key: centroid has aux1/aux2; minimixer has a single aux via auxSendOutput/auxReturnInput; kobolt has no aux. */
 export const SUBMIXER_AUX_KEYS: readonly ("aux1" | "aux2" | "aux")[] = ["aux1", "aux2", "aux"];
 
 /** Centroid EQ: low and high bands are fixed frequency (no field in API); mid has eqMidFrequency [240, 4200] Hz. */
