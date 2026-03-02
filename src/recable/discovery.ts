@@ -1,11 +1,211 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
-import type { DiscoveryResult, RemovedCable, SubmixerAuxSpecEntry, SubmixerCreationSpec } from "./types";
-import type { MasterChainSpec, MergerGroupSpec } from "./types";
+import type { ChainSpec, DiscoveryResult, MasterChainSpec, MergerGroupSpec, RemovedCable, SubmixerAuxSpecEntry, SubmixerCreationSpec } from "./types";
+import type { ForwardChainResult } from "./tracing";
 import { SUBMIXER_AUX_KEYS, SUBMIXER_ENTITY_TYPES, isSubmixer } from "./constants";
 import { traceBackToLastMixer, traceBackToSubmixer, traceForwardChainFromLastMixer, traceForwardChainFromLocation, traceAuxChainExits, serializedLocation, locationKey, locationMatches } from "./tracing";
 import { traceForwardChainFromSubmixer, getSubmixerChainBranchPathLengths, getSubmixerOutputLocation, getLastMixerOutputLocation } from "./tracing";
 import { getCentroidAuxLocations, getCentroidAuxSendGain, getSubmixerAuxLocations, getSubmixerChannelRefs, getLastMixerChannelRefs, buildSubmixerTreeAndOrder } from "./submixer";
-import { collectAuxCables } from "./cables";
+import { collectAuxCables, toRemovedCable, getCableColor } from "./cables";
+
+/* ------------------------------------------------------------------ */
+/*  Helpers – extracted from runDiscovery to reduce duplication        */
+/* ------------------------------------------------------------------ */
+
+/** Build a ChainSpec from a forward-chain trace, computing insertReturnCableIndex for multi-branch chains. */
+function buildChainSpec(entities: EntityQuery, chain: ForwardChainResult): ChainSpec {
+  const lastCables = chain.lastCables.map((lc) => ({
+    lastFrom: serializedLocation(lc.fields.fromSocket.value),
+    colorLast: getCableColor(lc),
+  }));
+  let insertReturnCableIndex: number | undefined;
+  if (chain.lastCables.length > 1) {
+    const pathLengths = getSubmixerChainBranchPathLengths(entities, chain.firstCable, chain.lastCables);
+    let minDist = Infinity;
+    for (let i = 0; i < chain.lastCables.length; i++) {
+      const d = pathLengths.get(chain.lastCables[i].fields.fromSocket.value.entityId) ?? Infinity;
+      if (d < minDist) {
+        minDist = d;
+        insertReturnCableIndex = i;
+      }
+    }
+  }
+  return {
+    firstTo: serializedLocation(chain.firstCable.fields.toSocket.value),
+    colorFirst: getCableColor(chain.firstCable),
+    lastCables,
+    insertReturnCableIndex,
+  };
+}
+
+/** Record first + last cables of a chain as removed; returns serialized representations. */
+function recordChainCablesAsRemoved(
+  chain: ForwardChainResult,
+  addCableToRemove: (c: NexusEntity<"desktopAudioCable">) => void,
+): { first: RemovedCable; last: RemovedCable[] } {
+  const first = toRemovedCable(chain.firstCable);
+  addCableToRemove(chain.firstCable);
+  const last: RemovedCable[] = [];
+  for (const lc of chain.lastCables) {
+    last.push(toRemovedCable(lc));
+    addCableToRemove(lc);
+  }
+  return { first, last };
+}
+
+/** Build MasterChainSpec from a chain, master entity, and the last-mixer/merger output location. */
+function buildMasterChainSpec(
+  chain: ForwardChainResult,
+  master: NexusEntity<"mixerMaster">,
+  centroidOutLoc: NexusLocation,
+): MasterChainSpec {
+  const lastCables = chain.lastCables.map((lc) => ({
+    lastFrom: serializedLocation(lc.fields.fromSocket.value),
+    colorLast: getCableColor(lc),
+  }));
+  return {
+    sendLoc: serializedLocation(master.fields.insertOutput.location),
+    returnLoc: serializedLocation(master.fields.insertInput.location),
+    firstTo: serializedLocation(chain.firstCable.fields.toSocket.value),
+    centroidOut: serializedLocation(centroidOutLoc),
+    colorFirst: getCableColor(chain.firstCable),
+    lastCables,
+  };
+}
+
+/**
+ * For a submixer feeding a merger, collect its instrument cables and optional FX-insert chain.
+ * Returns null when no instrument cables are found (the submixer is not a meaningful merger input).
+ */
+function collectMergerInputSubmixerSpec(
+  entities: EntityQuery,
+  sourceSubmixer: NexusEntity,
+  mergerId: string,
+  removedSubmixerCables: RemovedCable[],
+  addCableToRemove: (c: NexusEntity<"desktopAudioCable">) => void,
+): SubmixerCreationSpec | null {
+  const channelRefs = getSubmixerChannelRefs(entities, sourceSubmixer);
+  const auxReturnLocs: NexusLocation[] = [];
+  for (const auxKey of SUBMIXER_AUX_KEYS) {
+    const locs = getSubmixerAuxLocations(sourceSubmixer, auxKey);
+    if (locs) auxReturnLocs.push(locs.returnLoc);
+  }
+  const instrumentCables: SubmixerCreationSpec["instrumentCables"] = [];
+  for (const ref of channelRefs) {
+    const cables = entities.ofTypes("desktopAudioCable").pointingTo.locations(ref.inputLoc).get() as NexusEntity<"desktopAudioCable">[];
+    for (const instC of cables) {
+      if (auxReturnLocs.some((loc) => locationMatches(instC.fields.toSocket.value, loc))) continue;
+      const source = traceBackToSubmixer(entities, instC.fields.fromSocket.value, new Set());
+      if (source && source.id !== sourceSubmixer.id && isSubmixer(source)) continue;
+      removedSubmixerCables.push(toRemovedCable(instC));
+      instrumentCables.push({
+        channelRef: ref,
+        fromSerialized: serializedLocation(instC.fields.fromSocket.value),
+        colorIndex: getCableColor(instC),
+      });
+      addCableToRemove(instC);
+    }
+  }
+  let chainSpec: ChainSpec | undefined;
+  const outLoc = getSubmixerOutputLocation(sourceSubmixer);
+  if (outLoc) {
+    const subChain = traceForwardChainFromLocation(entities, outLoc, new Set([mergerId]));
+    if (subChain) {
+      removedSubmixerCables.push(toRemovedCable(subChain.firstCable));
+      addCableToRemove(subChain.firstCable);
+      chainSpec = buildChainSpec(entities, subChain);
+    }
+  }
+  if (instrumentCables.length === 0) return null;
+  return { instrumentCables, auxChainEndCables: [], chainSpec };
+}
+
+/**
+ * Process cables going into a merger: for each, find source submixer (if any), collect its spec,
+ * and build the merger group's inputCables list.
+ */
+function processMergerInputCables(
+  entities: EntityQuery,
+  cableEntities: NexusEntity<"desktopAudioCable">[],
+  mergerId: string,
+  mergerSubmixerSpecs: Map<string, SubmixerCreationSpec>,
+  removedMergerInputCables: RemovedCable[],
+  removedSubmixerCables: RemovedCable[],
+  addCableToRemove: (c: NexusEntity<"desktopAudioCable">) => void,
+): MergerGroupSpec["inputCables"] {
+  const inputCables: MergerGroupSpec["inputCables"] = [];
+  for (const c of cableEntities) {
+    removedMergerInputCables.push(toRemovedCable(c));
+    const fromEntity = entities.getEntity(c.fields.fromSocket.value.entityId) as NexusEntity | null;
+    const sourceSubmixer =
+      fromEntity && isSubmixer(fromEntity)
+        ? fromEntity
+        : traceBackToSubmixer(entities, c.fields.fromSocket.value, new Set());
+    let sourceSubmixerId: string | undefined = sourceSubmixer?.id;
+    if (sourceSubmixerId && sourceSubmixer && !mergerSubmixerSpecs.has(sourceSubmixerId)) {
+      const spec = collectMergerInputSubmixerSpec(entities, sourceSubmixer, mergerId, removedSubmixerCables, addCableToRemove);
+      if (spec) {
+        mergerSubmixerSpecs.set(sourceSubmixerId, spec);
+      } else {
+        sourceSubmixerId = undefined;
+      }
+    }
+    inputCables.push({
+      fromSerialized: serializedLocation(c.fields.fromSocket.value),
+      colorIndex: getCableColor(c),
+      ...(sourceSubmixerId ? { sourceSubmixerId } : {}),
+    });
+    addCableToRemove(c);
+  }
+  return inputCables;
+}
+
+/** Collect aux cable specs for all submixers that have aux sends (last mixer + topo order). */
+function collectAuxSpecs(
+  entities: EntityQuery,
+  allCables: NexusEntity<"desktopAudioCable">[],
+  lastMixer: NexusEntity,
+  topoOrder: NexusEntity[],
+  removedAuxCables: RemovedCable[],
+  addCableToRemove: (c: NexusEntity<"desktopAudioCable">) => void,
+): SubmixerAuxSpecEntry[] {
+  const result: SubmixerAuxSpecEntry[] = [];
+  const mixersWithAux: NexusEntity[] = [];
+  if (SUBMIXER_ENTITY_TYPES.has(lastMixer.entityType)) mixersWithAux.push(lastMixer);
+  const seenIds = new Set(mixersWithAux.map((e) => e.id));
+  for (const sm of topoOrder) {
+    if (!seenIds.has(sm.id)) {
+      seenIds.add(sm.id);
+      mixersWithAux.push(sm);
+    }
+  }
+  for (const sm of mixersWithAux) {
+    const auxKeys: readonly ("aux1" | "aux2" | "aux")[] =
+      sm.entityType === "minimixer" ? ["aux"] : ["aux1", "aux2"];
+    for (const auxKey of auxKeys) {
+      const locs = sm.entityType === "centroid"
+        ? getCentroidAuxLocations(sm as NexusEntity<"centroid">, auxKey as "aux1" | "aux2")
+        : getSubmixerAuxLocations(sm, auxKey);
+      if (!locs) continue;
+      const collected = collectAuxCables(entities, allCables, locs.sendLoc, locs.returnLoc);
+      const spec = collected ? collected.spec : { send: [], return: [] };
+      if (collected) {
+        for (const rem of [...spec.send, ...spec.return]) removedAuxCables.push(rem);
+        for (const c of collected.cablesToRemove) addCableToRemove(c);
+      }
+      if (spec.send.length === 0 && spec.return.length === 0) continue;
+      const auxSendGainInfo =
+        sm.entityType === "centroid" && auxKey !== "aux"
+          ? getCentroidAuxSendGain(sm as NexusEntity<"centroid">, auxKey as "aux1" | "aux2") ?? undefined
+          : undefined;
+      result.push({ submixerId: sm.id, auxKey, spec, auxSendGainInfo });
+    }
+  }
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main discovery                                                     */
+/* ------------------------------------------------------------------ */
 
 export function runDiscovery(entities: EntityQuery): DiscoveryResult {
   const mixerChannels = (entities.ofTypes("mixerChannel").get() as NexusEntity<"mixerChannel">[]).slice().sort((a, b) => a.id.localeCompare(b.id));
@@ -81,8 +281,10 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     };
   }
 
+  /* ---------- classify cables by source ---------- */
+
   const lastCentroidChannelInputKeys = new Set(channelRefs.map((ref) => locationKey(ref.inputLoc)));
-  type CableWithChannelAndSubmixer = { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: import("./types").SubmixerChannelRef; sourceSubmixer: NexusEntity | null };
+  type CableWithChannelAndSubmixer = CableWithChannel & { sourceSubmixer: NexusEntity | null };
   const cablesWithSource: CableWithChannelAndSubmixer[] = [];
   for (const { cable, centroidChannel, channelRef } of cablesWithChannel) {
     const sourceSubmixer = traceBackToSubmixer(entities, cable.fields.fromSocket.value, new Set());
@@ -96,6 +298,8 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     list.push(c);
     submixerCableMap.set(c.sourceSubmixer.id, list);
   }
+
+  /* ---------- cable removal bookkeeping ---------- */
 
   const cablesToRemove: NexusEntity<"desktopAudioCable">[] = [];
   const cablesToRemoveIds = new Set<string>();
@@ -116,141 +320,31 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
   let effectiveDirectCables = directCables;
   if (lastMixer.entityType !== "audioMerger") {
     for (const { cable: oldCable } of directCables) {
-      removedChannelCables.push({
-        from: serializedLocation(oldCable.fields.fromSocket.value),
-        to: serializedLocation(oldCable.fields.toSocket.value),
-        colorIndex: (oldCable.fields.colorIndex as { value?: number })?.value ?? 0,
-      });
+      removedChannelCables.push(toRemovedCable(oldCable));
       addCableToRemove(oldCable);
     }
   }
+
+  /* ---------- chain / merger routing ---------- */
 
   let masterChainSpec: MasterChainSpec | null = null;
   let mergerGroupSpec: MergerGroupSpec | null = null;
   const mergerSubmixerSpecs = new Map<string, SubmixerCreationSpec>();
 
   if (lastMixer.entityType === "audioMerger" && chain) {
+    // Merger IS the last mixer: collect input cables, then build master chain from merger output.
     const merger = lastMixer as NexusEntity<"audioMerger">;
     const mergerOutLoc = (merger.fields as Record<string, { location?: NexusLocation }>).audioOutput?.location;
-    const inputCables: MergerGroupSpec["inputCables"] = [];
-    for (const { cable: c, channelRef: _ref } of cablesWithChannel) {
-      removedMergerInputCables.push({
-        from: serializedLocation(c.fields.fromSocket.value),
-        to: serializedLocation(c.fields.toSocket.value),
-        colorIndex: (c.fields.colorIndex as { value?: number })?.value ?? 0,
-      });
-      const fromEntity = entities.getEntity(c.fields.fromSocket.value.entityId) as NexusEntity | null;
-      const sourceSubmixer =
-        fromEntity && isSubmixer(fromEntity)
-          ? fromEntity
-          : traceBackToSubmixer(entities, c.fields.fromSocket.value, new Set());
-      let sourceSubmixerId: string | undefined = sourceSubmixer?.id;
-      if (sourceSubmixerId && sourceSubmixer && !mergerSubmixerSpecs.has(sourceSubmixerId)) {
-        const smChannelRefs = getSubmixerChannelRefs(entities, sourceSubmixer);
-        const submixerAuxReturnLocs: NexusLocation[] = [];
-        for (const auxKey of SUBMIXER_AUX_KEYS) {
-          const locs = getSubmixerAuxLocations(sourceSubmixer, auxKey);
-          if (locs) submixerAuxReturnLocs.push(locs.returnLoc);
-        }
-        const instrumentCables: SubmixerCreationSpec["instrumentCables"] = [];
-        for (const ref of smChannelRefs) {
-          const cablesToRef = entities.ofTypes("desktopAudioCable").pointingTo.locations(ref.inputLoc).get() as NexusEntity<"desktopAudioCable">[];
-          for (const instC of cablesToRef) {
-            if (submixerAuxReturnLocs.some((loc) => locationMatches(instC.fields.toSocket.value, loc))) continue;
-            const source = traceBackToSubmixer(entities, instC.fields.fromSocket.value, new Set());
-            if (source && source.id !== sourceSubmixerId && isSubmixer(source)) continue;
-            removedSubmixerCables.push({
-              from: serializedLocation(instC.fields.fromSocket.value),
-              to: serializedLocation(instC.fields.toSocket.value),
-              colorIndex: (instC.fields.colorIndex as { value?: number })?.value ?? 0,
-            });
-            instrumentCables.push({
-              channelRef: ref,
-              fromSerialized: serializedLocation(instC.fields.fromSocket.value),
-              colorIndex: (instC.fields.colorIndex as { value?: number })?.value ?? 0,
-            });
-            addCableToRemove(instC);
-          }
-        }
-        let chainSpec: SubmixerCreationSpec["chainSpec"];
-        const submixerOutLoc = getSubmixerOutputLocation(sourceSubmixer);
-        if (submixerOutLoc) {
-          const subChain = traceForwardChainFromLocation(entities, submixerOutLoc, new Set([merger.id]));
-          if (subChain) {
-            removedSubmixerCables.push({
-              from: serializedLocation(subChain.firstCable.fields.fromSocket.value),
-              to: serializedLocation(subChain.firstCable.fields.toSocket.value),
-              colorIndex: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-            });
-            addCableToRemove(subChain.firstCable);
-            const lastCableSpecs = subChain.lastCables.map((lc) => ({
-              lastFrom: serializedLocation(lc.fields.fromSocket.value),
-              colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-            }));
-            let insertReturnCableIndex: number | undefined;
-            if (subChain.lastCables.length > 1) {
-              const pathLengths = getSubmixerChainBranchPathLengths(entities, subChain.firstCable, subChain.lastCables);
-              let minDist = Infinity;
-              for (let i = 0; i < subChain.lastCables.length; i++) {
-                const fromEntityId = subChain.lastCables[i].fields.fromSocket.value.entityId;
-                const d = pathLengths.get(fromEntityId) ?? Infinity;
-                if (d < minDist) {
-                  minDist = d;
-                  insertReturnCableIndex = i;
-                }
-              }
-            }
-            chainSpec = {
-              firstTo: serializedLocation(subChain.firstCable.fields.toSocket.value),
-              colorFirst: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-              lastCables: lastCableSpecs,
-              insertReturnCableIndex,
-            };
-          }
-        }
-        if (instrumentCables.length > 0) {
-          mergerSubmixerSpecs.set(sourceSubmixerId, { instrumentCables, auxChainEndCables: [], chainSpec });
-        } else {
-          sourceSubmixerId = undefined;
-        }
-      }
-      inputCables.push({
-        fromSerialized: serializedLocation(c.fields.fromSocket.value),
-        colorIndex: (c.fields.colorIndex as { value?: number })?.value ?? 0,
-        ...(sourceSubmixerId ? { sourceSubmixerId } : {}),
-      });
-      addCableToRemove(c);
-    }
+    const cableEntities = cablesWithChannel.map((c) => c.cable);
+    const inputCables = processMergerInputCables(entities, cableEntities, merger.id, mergerSubmixerSpecs, removedMergerInputCables, removedSubmixerCables, addCableToRemove);
     mergerGroupSpec = { inputCables };
     if (mergerOutLoc) {
       const master = entities.ofTypes("mixerMaster").getOne() as NexusEntity<"mixerMaster"> | undefined;
       if (master) {
-        removedChainFirst = {
-          from: serializedLocation(chain.firstCable.fields.fromSocket.value),
-          to: serializedLocation(chain.firstCable.fields.toSocket.value),
-          colorIndex: (chain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        };
-        addCableToRemove(chain.firstCable);
-        for (const lastCable of chain.lastCables) {
-          removedChainLast.push({
-            from: serializedLocation(lastCable.fields.fromSocket.value),
-            to: serializedLocation(lastCable.fields.toSocket.value),
-            colorIndex: (lastCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          });
-          addCableToRemove(lastCable);
-        }
-        const lastCableSpecs = chain.lastCables.map((lc) => ({
-          lastFrom: serializedLocation(lc.fields.fromSocket.value),
-          colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-        }));
-        masterChainSpec = {
-          sendLoc: serializedLocation(master.fields.insertOutput.location),
-          returnLoc: serializedLocation(master.fields.insertInput.location),
-          firstTo: serializedLocation(chain.firstCable.fields.toSocket.value),
-          centroidOut: serializedLocation(mergerOutLoc),
-          colorFirst: (chain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          lastCables: lastCableSpecs,
-        };
+        const removed = recordChainCablesAsRemoved(chain, addCableToRemove);
+        removedChainFirst = removed.first;
+        removedChainLast.push(...removed.last);
+        masterChainSpec = buildMasterChainSpec(chain, master, mergerOutLoc);
       }
     }
     effectiveDirectCables = [];
@@ -262,6 +356,7 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     const merger = mergerFromList ?? (firstToEntity as NexusEntity<"audioMerger"> | null);
 
     if (isMergerChain && merger) {
+      // Chain from last mixer goes through a merger: collect merger input cables, then chain from merger output.
       const mergerFields = merger.fields as Record<string, { location?: NexusLocation } | undefined>;
       const mergerInputLocs = ["audioInputA", "audioInputB", "audioInputC"]
         .map((k) => mergerFields[k]?.location)
@@ -270,176 +365,47 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
         (entities.ofTypes("desktopAudioCable").pointingTo.locations(loc).get() as NexusEntity<"desktopAudioCable">[])
       );
       const seenCableIds = new Set<string>();
-      const mergerInputCables: NexusEntity<"desktopAudioCable">[] = [];
+      const dedupedCables: NexusEntity<"desktopAudioCable">[] = [];
       for (const c of mergerInputCablesByLoc) {
         if (!seenCableIds.has(c.id)) {
           seenCableIds.add(c.id);
-          mergerInputCables.push(c);
+          dedupedCables.push(c);
         }
       }
-      mergerInputCables.sort((a, b) => a.id.localeCompare(b.id));
-      const inputCables: MergerGroupSpec["inputCables"] = [];
-      for (const c of mergerInputCables) {
-        removedMergerInputCables.push({
-          from: serializedLocation(c.fields.fromSocket.value),
-          to: serializedLocation(c.fields.toSocket.value),
-          colorIndex: (c.fields.colorIndex as { value?: number })?.value ?? 0,
-        });
-        const fromEntity = entities.getEntity(c.fields.fromSocket.value.entityId) as NexusEntity | null;
-        const sourceSubmixer =
-          fromEntity && isSubmixer(fromEntity)
-            ? fromEntity
-            : traceBackToSubmixer(entities, c.fields.fromSocket.value, new Set());
-        let sourceSubmixerId: string | undefined = sourceSubmixer?.id;
-        if (sourceSubmixerId && sourceSubmixer && !mergerSubmixerSpecs.has(sourceSubmixerId)) {
-          const channelRefs = getSubmixerChannelRefs(entities, sourceSubmixer);
-          const submixerAuxReturnLocs: NexusLocation[] = [];
-          for (const auxKey of SUBMIXER_AUX_KEYS) {
-            const locs = getSubmixerAuxLocations(sourceSubmixer, auxKey);
-            if (locs) submixerAuxReturnLocs.push(locs.returnLoc);
-          }
-          const instrumentCables: SubmixerCreationSpec["instrumentCables"] = [];
-          for (const ref of channelRefs) {
-            const cables = entities.ofTypes("desktopAudioCable").pointingTo.locations(ref.inputLoc).get() as NexusEntity<"desktopAudioCable">[];
-            for (const instC of cables) {
-              if (submixerAuxReturnLocs.some((loc) => locationMatches(instC.fields.toSocket.value, loc))) continue;
-              const source = traceBackToSubmixer(entities, instC.fields.fromSocket.value, new Set());
-              if (source && source.id !== sourceSubmixerId && isSubmixer(source)) continue;
-              removedSubmixerCables.push({
-                from: serializedLocation(instC.fields.fromSocket.value),
-                to: serializedLocation(instC.fields.toSocket.value),
-                colorIndex: (instC.fields.colorIndex as { value?: number })?.value ?? 0,
-              });
-              instrumentCables.push({
-                channelRef: ref,
-                fromSerialized: serializedLocation(instC.fields.fromSocket.value),
-                colorIndex: (instC.fields.colorIndex as { value?: number })?.value ?? 0,
-              });
-              addCableToRemove(instC);
-            }
-          }
-          let chainSpec: SubmixerCreationSpec["chainSpec"];
-          const submixerOutLoc = getSubmixerOutputLocation(sourceSubmixer);
-          if (submixerOutLoc) {
-            const subChain = traceForwardChainFromLocation(entities, submixerOutLoc, new Set([merger.id]));
-            if (subChain) {
-              removedSubmixerCables.push({
-                from: serializedLocation(subChain.firstCable.fields.fromSocket.value),
-                to: serializedLocation(subChain.firstCable.fields.toSocket.value),
-                colorIndex: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-              });
-              addCableToRemove(subChain.firstCable);
-              const lastCableSpecs = subChain.lastCables.map((lc) => ({
-                lastFrom: serializedLocation(lc.fields.fromSocket.value),
-                colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-              }));
-              let insertReturnCableIndex: number | undefined;
-              if (subChain.lastCables.length > 1) {
-                const pathLengths = getSubmixerChainBranchPathLengths(
-                  entities,
-                  subChain.firstCable,
-                  subChain.lastCables
-                );
-                let minDist = Infinity;
-                for (let i = 0; i < subChain.lastCables.length; i++) {
-                  const fromEntityId = subChain.lastCables[i].fields.fromSocket.value.entityId;
-                  const d = pathLengths.get(fromEntityId) ?? Infinity;
-                  if (d < minDist) {
-                    minDist = d;
-                    insertReturnCableIndex = i;
-                  }
-                }
-              }
-              chainSpec = {
-                firstTo: serializedLocation(subChain.firstCable.fields.toSocket.value),
-                colorFirst: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-                lastCables: lastCableSpecs,
-                insertReturnCableIndex,
-              };
-            }
-          }
-          if (instrumentCables.length > 0) {
-            mergerSubmixerSpecs.set(sourceSubmixerId, { instrumentCables, auxChainEndCables: [], chainSpec });
-          } else {
-            sourceSubmixerId = undefined;
-          }
-        }
-        inputCables.push({
-          fromSerialized: serializedLocation(c.fields.fromSocket.value),
-          colorIndex: (c.fields.colorIndex as { value?: number })?.value ?? 0,
-          ...(sourceSubmixerId ? { sourceSubmixerId } : {}),
-        });
-        addCableToRemove(c);
-      }
+      dedupedCables.sort((a, b) => a.id.localeCompare(b.id));
+
+      const inputCables = processMergerInputCables(entities, dedupedCables, merger.id, mergerSubmixerSpecs, removedMergerInputCables, removedSubmixerCables, addCableToRemove);
+
       const mergerOutLoc = (merger.fields as Record<string, { location?: NexusLocation }>).audioOutput?.location;
       const mergerChain = mergerOutLoc
         ? traceForwardChainFromLocation(entities, mergerOutLoc, new Set(mixerChannels.map((m) => m.id)))
         : null;
       if (mergerChain && inputCables.length > 0) {
-        removedChainFirst = {
-          from: serializedLocation(mergerChain.firstCable.fields.fromSocket.value),
-          to: serializedLocation(mergerChain.firstCable.fields.toSocket.value),
-          colorIndex: (mergerChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        };
-        addCableToRemove(mergerChain.firstCable);
-        const lastCableSpecs = mergerChain.lastCables.map((lc) => ({
-          lastFrom: serializedLocation(lc.fields.fromSocket.value),
-          colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-        }));
-        for (const lastCable of mergerChain.lastCables) {
-          removedChainLast.push({
-            from: serializedLocation(lastCable.fields.fromSocket.value),
-            to: serializedLocation(lastCable.fields.toSocket.value),
-            colorIndex: (lastCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          });
-          addCableToRemove(lastCable);
-        }
+        const removed = recordChainCablesAsRemoved(mergerChain, addCableToRemove);
+        removedChainFirst = removed.first;
+        removedChainLast.push(...removed.last);
         mergerGroupSpec = { inputCables };
         const master = entities.ofTypes("mixerMaster").getOne() as NexusEntity<"mixerMaster"> | undefined;
         if (master) {
-          masterChainSpec = {
-            sendLoc: serializedLocation(master.fields.insertOutput.location),
-            returnLoc: serializedLocation(master.fields.insertInput.location),
-            firstTo: serializedLocation(mergerChain.firstCable.fields.toSocket.value),
-            centroidOut: mergerOutLoc ? serializedLocation(mergerOutLoc) : serializedLocation(mergerChain.firstCable.fields.fromSocket.value),
-            colorFirst: (mergerChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-            lastCables: lastCableSpecs,
-          };
+          const centroidOutLoc = mergerOutLoc ?? mergerChain.firstCable.fields.fromSocket.value;
+          masterChainSpec = buildMasterChainSpec(mergerChain, master, centroidOutLoc);
         }
       }
     } else {
+      // Normal FX-insert chain (no merger involved).
       const master = entities.ofTypes("mixerMaster").getOne() as NexusEntity<"mixerMaster"> | undefined;
       if (master) {
-        removedChainFirst = {
-          from: serializedLocation(chain.firstCable.fields.fromSocket.value),
-          to: serializedLocation(chain.firstCable.fields.toSocket.value),
-          colorIndex: (chain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        };
-        addCableToRemove(chain.firstCable);
-        for (const lastCable of chain.lastCables) {
-          removedChainLast.push({
-            from: serializedLocation(lastCable.fields.fromSocket.value),
-            to: serializedLocation(lastCable.fields.toSocket.value),
-            colorIndex: (lastCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          });
-          addCableToRemove(lastCable);
-        }
-        const lastCableSpecs = chain.lastCables.map((lc) => ({
-          lastFrom: serializedLocation(lc.fields.fromSocket.value),
-          colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-        }));
+        const removed = recordChainCablesAsRemoved(chain, addCableToRemove);
+        removedChainFirst = removed.first;
+        removedChainLast.push(...removed.last);
         const lastMixerOut = getLastMixerOutputLocation(lastMixer);
-        masterChainSpec = {
-          sendLoc: serializedLocation(master.fields.insertOutput.location),
-          returnLoc: serializedLocation(master.fields.insertInput.location),
-          firstTo: serializedLocation(chain.firstCable.fields.toSocket.value),
-          centroidOut: lastMixerOut ? serializedLocation(lastMixerOut) : serializedLocation(chain.firstCable.fields.fromSocket.value),
-          colorFirst: (chain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          lastCables: lastCableSpecs,
-        };
+        const centroidOutLoc = lastMixerOut ?? chain.firstCable.fields.fromSocket.value;
+        masterChainSpec = buildMasterChainSpec(chain, master, centroidOutLoc);
       }
     }
   }
+
+  /* ---------- submixer tree + aux ---------- */
 
   const allCables = entities.ofTypes("desktopAudioCable").get() as NexusEntity<"desktopAudioCable">[];
 
@@ -448,60 +414,9 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     entities
   );
 
-  const auxSpecsPerSubmixer: SubmixerAuxSpecEntry[] = [];
-  const mixersWithAux: NexusEntity[] = [];
-  if (lastMixer && SUBMIXER_ENTITY_TYPES.has(lastMixer.entityType)) {
-    mixersWithAux.push(lastMixer);
-  }
-  const seenIds = new Set<string>(mixersWithAux.map((e) => e.id));
-  for (const sm of topoOrder) {
-    if (!seenIds.has(sm.id)) {
-      seenIds.add(sm.id);
-      mixersWithAux.push(sm);
-    }
-  }
-  for (const sm of mixersWithAux) {
-    if (sm.entityType === "centroid") {
-      for (const auxKey of ["aux1", "aux2"] as const) {
-        const locs = getCentroidAuxLocations(sm as NexusEntity<"centroid">, auxKey);
-        if (!locs) continue;
-        const result = collectAuxCables(entities, allCables, locs.sendLoc, locs.returnLoc);
-        const spec = result ? result.spec : { send: [], return: [] };
-        if (result) {
-          for (const rem of [...spec.send, ...spec.return]) removedAuxCables.push(rem);
-          for (const c of result.cablesToRemove) addCableToRemove(c);
-        }
-        if (spec.send.length === 0 && spec.return.length === 0) continue;
-        const auxSendGainInfo = getCentroidAuxSendGain(sm as NexusEntity<"centroid">, auxKey) ?? undefined;
-        auxSpecsPerSubmixer.push({ submixerId: sm.id, auxKey, spec, auxSendGainInfo });
-      }
-    } else if (sm.entityType === "minimixer") {
-      const auxKey = "aux";
-      const locs = getSubmixerAuxLocations(sm, auxKey);
-      if (!locs) continue;
-      const result = collectAuxCables(entities, allCables, locs.sendLoc, locs.returnLoc);
-      const spec = result ? result.spec : { send: [], return: [] };
-      if (result) {
-        for (const rem of [...spec.send, ...spec.return]) removedAuxCables.push(rem);
-        for (const c of result.cablesToRemove) addCableToRemove(c);
-      }
-      if (spec.send.length === 0 && spec.return.length === 0) continue;
-      auxSpecsPerSubmixer.push({ submixerId: sm.id, auxKey, spec });
-    } else if (sm.entityType === "kobolt") {
-      for (const auxKey of ["aux1", "aux2"] as const) {
-        const locs = getSubmixerAuxLocations(sm, auxKey);
-        if (!locs) continue;
-        const result = collectAuxCables(entities, allCables, locs.sendLoc, locs.returnLoc);
-        const spec = result ? result.spec : { send: [], return: [] };
-        if (result) {
-          for (const rem of [...spec.send, ...spec.return]) removedAuxCables.push(rem);
-          for (const c of result.cablesToRemove) addCableToRemove(c);
-        }
-        if (spec.send.length === 0 && spec.return.length === 0) continue;
-        auxSpecsPerSubmixer.push({ submixerId: sm.id, auxKey, spec });
-      }
-    }
-  }
+  const auxSpecsPerSubmixer = collectAuxSpecs(entities, allCables, lastMixer, topoOrder, removedAuxCables, addCableToRemove);
+
+  /* ---------- submixer specs ---------- */
 
   const submixerSpecBySubmixerId = new Map<string, SubmixerCreationSpec>();
 
@@ -532,7 +447,7 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
 
   for (const submixer of topoOrder) {
     const submixerId = submixer.id;
-    const channelRefs = getSubmixerChannelRefs(entities, submixer);
+    const smChannelRefs = getSubmixerChannelRefs(entities, submixer);
     const submixerAuxReturnLocs: NexusLocation[] = [];
     for (const auxKey of SUBMIXER_AUX_KEYS) {
       const locs = getSubmixerAuxLocations(submixer, auxKey);
@@ -542,7 +457,7 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     type SubmixerCableWithChannelRef = { cable: NexusEntity<"desktopAudioCable">; channelRef: ReturnType<typeof getSubmixerChannelRefs>[number] };
     const instrumentCables: SubmixerCableWithChannelRef[] = [];
     const submixerCablesBySource = new Map<string, SubmixerCableWithChannelRef[]>();
-    for (const ref of channelRefs) {
+    for (const ref of smChannelRefs) {
       const cables = entities.ofTypes("desktopAudioCable").pointingTo.locations(ref.inputLoc).get();
       for (const cable of cables) {
         const c = cable as NexusEntity<"desktopAudioCable">;
@@ -564,74 +479,32 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
 
     for (const [, list] of submixerCablesBySource) {
       for (const { cable: oldCable } of list) {
-        removedSubmixerCables.push({
-          from: serializedLocation(oldCable.fields.fromSocket.value),
-          to: serializedLocation(oldCable.fields.toSocket.value),
-          colorIndex: (oldCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        });
+        removedSubmixerCables.push(toRemovedCable(oldCable));
         addCableToRemove(oldCable);
       }
     }
 
     for (const { cable: oldCable, channelRef } of instrumentCables) {
-      removedSubmixerCables.push({
-        from: serializedLocation(oldCable.fields.fromSocket.value),
-        to: serializedLocation(oldCable.fields.toSocket.value),
-        colorIndex: (oldCable.fields.colorIndex as { value?: number })?.value ?? 0,
-      });
+      removedSubmixerCables.push(toRemovedCable(oldCable));
       spec.instrumentCables.push({
         channelRef,
         fromSerialized: serializedLocation(oldCable.fields.fromSocket.value),
-        colorIndex: (oldCable.fields.colorIndex as { value?: number })?.value ?? 0,
+        colorIndex: getCableColor(oldCable),
       });
       addCableToRemove(oldCable);
     }
 
     const subChain = traceForwardChainFromSubmixer(entities, submixer, allChainEndpointKeys);
     if (subChain) {
-      const firstToLoc = subChain.firstCable.fields.toSocket.value;
-      const firstToKey = locationKey(firstToLoc);
-      const goesToChainEndpoint = allChainEndpointKeys.has(firstToKey);
-      if (goesToChainEndpoint) {
-        // First cable goes directly to a channel/merger input (e.g. Kobolt output → next mixer input, or feedback to own input). Not an FX insert – skip chainSpec.
-      } else {
-        removedSubmixerCables.push({
-          from: serializedLocation(subChain.firstCable.fields.fromSocket.value),
-          to: serializedLocation(firstToLoc),
-          colorIndex: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        });
+      const firstToKey = locationKey(subChain.firstCable.fields.toSocket.value);
+      if (!allChainEndpointKeys.has(firstToKey)) {
+        removedSubmixerCables.push(toRemovedCable(subChain.firstCable));
         addCableToRemove(subChain.firstCable);
-        const lastCableSpecs = subChain.lastCables.map((lc) => ({
-          lastFrom: serializedLocation(lc.fields.fromSocket.value),
-          colorLast: (lc.fields.colorIndex as { value?: number })?.value ?? 0,
-        }));
         for (const lastCable of subChain.lastCables) {
-          removedSubmixerCables.push({
-            from: serializedLocation(lastCable.fields.fromSocket.value),
-            to: serializedLocation(lastCable.fields.toSocket.value),
-            colorIndex: (lastCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          });
+          removedSubmixerCables.push(toRemovedCable(lastCable));
           addCableToRemove(lastCable);
         }
-        let insertReturnCableIndex: number | undefined;
-        if (subChain.lastCables.length > 1) {
-          const pathLengths = getSubmixerChainBranchPathLengths(entities, subChain.firstCable, subChain.lastCables);
-          let minDist = Infinity;
-          for (let i = 0; i < subChain.lastCables.length; i++) {
-            const fromEntityId = subChain.lastCables[i].fields.fromSocket.value.entityId;
-            const d = pathLengths.get(fromEntityId) ?? Infinity;
-            if (d < minDist) {
-              minDist = d;
-              insertReturnCableIndex = i;
-            }
-          }
-        }
-        spec.chainSpec = {
-          firstTo: serializedLocation(firstToLoc),
-          colorFirst: (subChain.firstCable.fields.colorIndex as { value?: number })?.value ?? 0,
-          lastCables: lastCableSpecs,
-          insertReturnCableIndex,
-        };
+        spec.chainSpec = buildChainSpec(entities, subChain);
       }
     }
 
@@ -654,14 +527,10 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
       const locs = getSubmixerAuxLocations(submixer, auxKey);
       if (!locs) continue;
       for (const exitCable of traceAuxChainExits(entities, submixer, auxKey, allCables, getSubmixerAuxLocations)) {
-        removedSubmixerCables.push({
-          from: serializedLocation(exitCable.fields.fromSocket.value),
-          to: serializedLocation(exitCable.fields.toSocket.value),
-          colorIndex: (exitCable.fields.colorIndex as { value?: number })?.value ?? 0,
-        });
+        removedSubmixerCables.push(toRemovedCable(exitCable));
         spec.auxChainEndCables.push({
           fromSerialized: serializedLocation(exitCable.fields.fromSocket.value),
-          colorIndex: (exitCable.fields.colorIndex as { value?: number })?.value ?? 0,
+          colorIndex: getCableColor(exitCable),
         });
         addCableToRemove(exitCable);
       }

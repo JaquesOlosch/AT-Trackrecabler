@@ -1,14 +1,28 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
-import type { AuxCableSpec, RemovedCable, SerializedLocation } from "./types";
+import type { AuxCableSpec, RecableTransaction, RemovedCable, SerializedLocation } from "./types";
 import { locationKey, locationMatches, serializedLocation } from "./tracing";
 
 function locationMatchesSerialized(loc: NexusLocation, ser: SerializedLocation): boolean {
   return loc.entityId === ser.entityId && loc.fieldIndex.length === ser.fieldIndex.length && loc.fieldIndex.every((n, i) => n === ser.fieldIndex[i]);
 }
 
+/** Extract colorIndex from a cable entity. */
+export function getCableColor(cable: NexusEntity<"desktopAudioCable">): number {
+  return (cable.fields.colorIndex as { value?: number })?.value ?? 0;
+}
+
+/** Build a RemovedCable from a cable entity. */
+export function toRemovedCable(cable: NexusEntity<"desktopAudioCable">): RemovedCable {
+  return {
+    from: serializedLocation(cable.fields.fromSocket.value),
+    to: serializedLocation(cable.fields.toSocket.value),
+    colorIndex: getCableColor(cable),
+  };
+}
+
 /** Creates cable only if both fromSocket and toSocket are unused. Returns created cable id or null if skipped. */
 export function createCableIfSocketsFree(
-  tx: { create: (type: "desktopAudioCable", props: { fromSocket: NexusLocation; toSocket: NexusLocation; colorIndex: number }) => { id: string } },
+  tx: Pick<RecableTransaction, "create">,
   fromSocket: NexusLocation,
   toSocket: NexusLocation,
   colorIndex: number,
@@ -53,19 +67,11 @@ export function collectAuxCables(
   const cablesToRemove: NexusEntity<"desktopAudioCable">[] = [];
 
   for (const cable of cablesFromSend) {
-    sendList.push({
-      from: serializedLocation(cable.fields.fromSocket.value),
-      to: serializedLocation(cable.fields.toSocket.value),
-      colorIndex: (cable.fields.colorIndex as { value?: number })?.value ?? 0,
-    });
+    sendList.push(toRemovedCable(cable));
     cablesToRemove.push(cable);
   }
   for (const cable of cablesToReturn) {
-    returnList.push({
-      from: serializedLocation(cable.fields.fromSocket.value),
-      to: serializedLocation(cable.fields.toSocket.value),
-      colorIndex: (cable.fields.colorIndex as { value?: number })?.value ?? 0,
-    });
+    returnList.push(toRemovedCable(cable));
     cablesToRemove.push(cable);
   }
 
@@ -75,7 +81,7 @@ export function collectAuxCables(
 /** Wire aux send/return cables from spec to a new aux entity. Returns created cable IDs. */
 export function wireAuxCables(
   entities: EntityQuery,
-  tx: { create: (type: "desktopAudioCable", props: { fromSocket: NexusLocation; toSocket: NexusLocation; colorIndex: number }) => { id: string } },
+  tx: Pick<RecableTransaction, "create">,
   spec: AuxCableSpec,
   newAuxSendLoc: NexusLocation,
   newAuxReturnLoc: NexusLocation,

@@ -1,59 +1,43 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
+import type { RecableTransaction } from "../types";
 import { locationMatches, locationKey } from "../tracing";
 import { CENTROID_TO_MIXER_PARAM_MAP } from "../constants";
 import { getMixerMidEqParamPath } from "./eq";
 
-/**
- * Get the NexusLocation for a nested field path on an entity.
- */
-export function getNestedFieldLocation(entity: NexusEntity, path: string[]): NexusLocation | null {
-  let current: unknown = entity.fields;
-  for (let i = 0; i < path.length; i++) {
-    const key = path[i];
-    const obj = current as Record<string, unknown>;
-    if (!obj || typeof obj !== "object") return null;
-    const field = obj[key];
-    if (!field) return null;
-    if (i === path.length - 1) {
-      const f = field as { location?: NexusLocation };
-      return f.location ?? null;
-    }
-    const nested = field as { fields?: unknown };
-    current = nested.fields ?? field;
-  }
-  return null;
+export type AutoIds = { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] };
+
+export function emptyAutoIds(): AutoIds {
+  return { trackIds: [], collectionIds: [], regionIds: [], eventIds: [] };
 }
 
+export function mergeAutoIds(target: AutoIds, source: AutoIds): void {
+  target.trackIds.push(...source.trackIds);
+  target.collectionIds.push(...source.collectionIds);
+  target.regionIds.push(...source.regionIds);
+  target.eventIds.push(...source.eventIds);
+}
+
+type RegionFields = {
+  positionTicks?: { value: number };
+  durationTicks?: { value: number };
+  collectionOffsetTicks?: { value: number };
+  loopOffsetTicks?: { value: number };
+  loopDurationTicks?: { value: number };
+  isEnabled?: { value: boolean };
+};
+
 /**
- * Copy automation from one parameter location to another.
+ * Clone all regions and events from old automation tracks into a new track.
+ * Shared by all three copy-automation functions.
  */
-export function copyAutomationBetweenLocations(
+function cloneRegionsAndEvents(
   entities: EntityQuery,
-  tx: { create: (type: string, props: unknown) => { id: string; location?: NexusLocation } },
-  sourceLocation: NexusLocation,
-  targetLocation: NexusLocation,
-  nextOrderRef: { value: number }
-): { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] } {
-  const result = { trackIds: [] as string[], collectionIds: [] as string[], regionIds: [] as string[], eventIds: [] as string[] };
-
-  const allAutomationTracks = entities.ofTypes("automationTrack").get() as NexusEntity<"automationTrack">[];
-  const tracksForSource = allAutomationTracks.filter((track) => {
-    const automatedParam = track.fields.automatedParameter as { value?: NexusLocation };
-    return automatedParam?.value && locationMatches(automatedParam.value, sourceLocation);
-  });
-
-  if (tracksForSource.length === 0) return result;
-
-  const isEnabled = (tracksForSource[0].fields.isEnabled as { value: boolean }).value;
-  const newTrack = tx.create("automationTrack", {
-    automatedParameter: targetLocation,
-    orderAmongTracks: nextOrderRef.value++,
-    isEnabled,
-  });
-  result.trackIds.push(newTrack.id);
-  const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
-
-  for (const oldTrack of tracksForSource) {
+  tx: Pick<RecableTransaction, "create">,
+  oldTracks: NexusEntity<"automationTrack">[],
+  newTrackLoc: NexusLocation,
+  result: AutoIds
+): void {
+  for (const oldTrack of oldTracks) {
     const allRegions = entities.ofTypes("automationRegion").get() as NexusEntity<"automationRegion">[];
     const regionsForTrack = allRegions.filter((region) => {
       const trackRef = region.fields.track as { value?: { entityId: string } };
@@ -69,17 +53,7 @@ export function copyAutomationBetweenLocations(
       result.collectionIds.push(newCollection.id);
       const newCollectionLoc = newCollection.location ?? ({ entityId: newCollection.id, fieldIndex: [] } as unknown as NexusLocation);
 
-      const regionData = oldRegion.fields.region as {
-        fields?: {
-          positionTicks?: { value: number };
-          durationTicks?: { value: number };
-          collectionOffsetTicks?: { value: number };
-          loopOffsetTicks?: { value: number };
-          loopDurationTicks?: { value: number };
-          isEnabled?: { value: boolean };
-        };
-      };
-      const rf = regionData.fields ?? {};
+      const rf = (oldRegion.fields.region as { fields?: RegionFields }).fields ?? {};
       const newRegion = tx.create("automationRegion", {
         track: newTrackLoc,
         collection: newCollectionLoc,
@@ -114,7 +88,59 @@ export function copyAutomationBetweenLocations(
       }
     }
   }
+}
 
+/**
+ * Get the NexusLocation for a nested field path on an entity.
+ */
+export function getNestedFieldLocation(entity: NexusEntity, path: string[]): NexusLocation | null {
+  let current: unknown = entity.fields;
+  for (let i = 0; i < path.length; i++) {
+    const key = path[i];
+    const obj = current as Record<string, unknown>;
+    if (!obj || typeof obj !== "object") return null;
+    const field = obj[key];
+    if (!field) return null;
+    if (i === path.length - 1) {
+      const f = field as { location?: NexusLocation };
+      return f.location ?? null;
+    }
+    const nested = field as { fields?: unknown };
+    current = nested.fields ?? field;
+  }
+  return null;
+}
+
+/**
+ * Copy automation from one parameter location to another.
+ */
+export function copyAutomationBetweenLocations(
+  entities: EntityQuery,
+  tx: Pick<RecableTransaction, "create">,
+  sourceLocation: NexusLocation,
+  targetLocation: NexusLocation,
+  nextOrderRef: { value: number }
+): AutoIds {
+  const result = emptyAutoIds();
+
+  const allAutomationTracks = entities.ofTypes("automationTrack").get() as NexusEntity<"automationTrack">[];
+  const tracksForSource = allAutomationTracks.filter((track) => {
+    const automatedParam = track.fields.automatedParameter as { value?: NexusLocation };
+    return automatedParam?.value && locationMatches(automatedParam.value, sourceLocation);
+  });
+
+  if (tracksForSource.length === 0) return result;
+
+  const isEnabled = (tracksForSource[0].fields.isEnabled as { value: boolean }).value;
+  const newTrack = tx.create("automationTrack", {
+    automatedParameter: targetLocation,
+    orderAmongTracks: nextOrderRef.value++,
+    isEnabled,
+  });
+  result.trackIds.push(newTrack.id);
+  const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
+
+  cloneRegionsAndEvents(entities, tx, tracksForSource, newTrackLoc, result);
   return result;
 }
 
@@ -124,14 +150,14 @@ export function copyAutomationBetweenLocations(
  */
 export function copyAuxAutomationForChannel(
   entities: EntityQuery,
-  tx: { create: (type: string, props: unknown) => { id: string; location?: NexusLocation } },
+  tx: Pick<RecableTransaction, "create">,
   centroidChannel: NexusEntity<"centroidChannel">,
   auxRoutes: { aux1?: NexusEntity<"mixerAuxRoute">; aux2?: NexusEntity<"mixerAuxRoute"> },
   nextOrderRef: { value: number },
   warnings: string[],
   usedAutomationTargetKeys: Set<string>
-): { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] } {
-  const result = { trackIds: [] as string[], collectionIds: [] as string[], regionIds: [] as string[], eventIds: [] as string[] };
+): AutoIds {
+  const result = emptyAutoIds();
 
   const allAutomationTracks = entities.ofTypes("automationTrack").get() as NexusEntity<"automationTrack">[];
   const centroidFields = centroidChannel.fields as Record<string, { location?: NexusLocation }>;
@@ -175,67 +201,7 @@ export function copyAuxAutomationForChannel(
     result.trackIds.push(newTrack.id);
     const newTrackLoc = newTrack.location ?? ({ entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation);
 
-    for (const oldTrack of tracksForField) {
-      const allRegions = entities.ofTypes("automationRegion").get() as NexusEntity<"automationRegion">[];
-      const regionsForTrack = allRegions.filter((region) => {
-        const trackRef = region.fields.track as { value?: { entityId: string } };
-        return trackRef?.value?.entityId === oldTrack.id;
-      });
-
-      for (const oldRegion of regionsForTrack) {
-        const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
-        const oldCollectionLoc = collectionRef.value;
-        const oldCollectionEntity = entities.getEntity(oldCollectionLoc.entityId);
-
-        const newCollection = tx.create("automationCollection", {});
-        result.collectionIds.push(newCollection.id);
-        const newCollectionLoc = newCollection.location ?? ({ entityId: newCollection.id, fieldIndex: [] } as unknown as NexusLocation);
-
-        const regionData = oldRegion.fields.region as {
-          fields?: {
-            positionTicks?: { value: number };
-            durationTicks?: { value: number };
-            collectionOffsetTicks?: { value: number };
-            loopOffsetTicks?: { value: number };
-            loopDurationTicks?: { value: number };
-            isEnabled?: { value: boolean };
-          };
-        };
-        const rf = regionData.fields ?? {};
-        const newRegion = tx.create("automationRegion", {
-          track: newTrackLoc,
-          collection: newCollectionLoc,
-          region: {
-            positionTicks: rf.positionTicks?.value ?? 0,
-            durationTicks: rf.durationTicks?.value ?? 15360,
-            collectionOffsetTicks: rf.collectionOffsetTicks?.value ?? 0,
-            loopOffsetTicks: rf.loopOffsetTicks?.value ?? 0,
-            loopDurationTicks: rf.loopDurationTicks?.value ?? 15360,
-            isEnabled: rf.isEnabled?.value ?? true,
-          },
-        });
-        result.regionIds.push(newRegion.id);
-
-        if (oldCollectionEntity) {
-          const allEvents = entities.ofTypes("automationEvent").get() as NexusEntity<"automationEvent">[];
-          const eventsForCollection = allEvents.filter((event) => {
-            const eventCollectionRef = event.fields.collection as { value?: { entityId: string } };
-            return eventCollectionRef?.value?.entityId === oldCollectionEntity.id;
-          });
-
-          for (const oldEvent of eventsForCollection) {
-            const newEvent = tx.create("automationEvent", {
-              collection: newCollectionLoc,
-              positionTicks: (oldEvent.fields.positionTicks as { value: number }).value,
-              value: (oldEvent.fields.value as { value: number }).value,
-              slope: (oldEvent.fields.slope as { value: number }).value,
-              interpolation: (oldEvent.fields.interpolation as { value: number }).value,
-            });
-            result.eventIds.push(newEvent.id);
-          }
-        }
-      }
-    }
+    cloneRegionsAndEvents(entities, tx, tracksForField, newTrackLoc, result);
   }
 
   return result;
@@ -246,13 +212,13 @@ export function copyAuxAutomationForChannel(
  */
 export function copyAutomationForChannel(
   entities: EntityQuery,
-  tx: { create: (type: string, props: unknown) => { id: string; location?: NexusLocation } },
+  tx: Pick<RecableTransaction, "create">,
   centroidChannel: NexusEntity<"centroidChannel">,
   newMixerChannel: NexusEntity<"mixerChannel">,
   nextOrderRef: { value: number },
   warnings: string[]
-): { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] } {
-  const result = { trackIds: [] as string[], collectionIds: [] as string[], regionIds: [] as string[], eventIds: [] as string[] };
+): AutoIds {
+  const result = emptyAutoIds();
 
   const allAutomationTracks = entities.ofTypes("automationTrack").get() as NexusEntity<"automationTrack">[];
   const tracksForChannel = allAutomationTracks.filter((track) => {
@@ -329,61 +295,8 @@ export function copyAutomationForChannel(
     result.trackIds.push(newTrack.id);
     const newTrackLoc = newTrack.location ?? { entityId: newTrack.id, fieldIndex: [] } as unknown as NexusLocation;
 
-    for (const { regionsForTrack } of items) {
-      for (const oldRegion of regionsForTrack) {
-        const collectionRef = oldRegion.fields.collection as { value: NexusLocation };
-        const oldCollectionLoc = collectionRef.value;
-        const oldCollectionEntity = entities.getEntity(oldCollectionLoc.entityId);
-
-        const newCollection = tx.create("automationCollection", {});
-        result.collectionIds.push(newCollection.id);
-        const newCollectionLoc = newCollection.location ?? { entityId: newCollection.id, fieldIndex: [] } as unknown as NexusLocation;
-
-        const regionData = oldRegion.fields.region as {
-          fields?: {
-            positionTicks?: { value: number };
-            durationTicks?: { value: number };
-            collectionOffsetTicks?: { value: number };
-            loopOffsetTicks?: { value: number };
-            loopDurationTicks?: { value: number };
-            isEnabled?: { value: boolean };
-          };
-        };
-        const rf = regionData.fields ?? {};
-        const newRegion = tx.create("automationRegion", {
-          track: newTrackLoc,
-          collection: newCollectionLoc,
-          region: {
-            positionTicks: rf.positionTicks?.value ?? 0,
-            durationTicks: rf.durationTicks?.value ?? 15360,
-            collectionOffsetTicks: rf.collectionOffsetTicks?.value ?? 0,
-            loopOffsetTicks: rf.loopOffsetTicks?.value ?? 0,
-            loopDurationTicks: rf.loopDurationTicks?.value ?? 15360,
-            isEnabled: rf.isEnabled?.value ?? true,
-          },
-        });
-        result.regionIds.push(newRegion.id);
-
-        if (oldCollectionEntity) {
-          const allEvents = entities.ofTypes("automationEvent").get() as NexusEntity<"automationEvent">[];
-          const eventsForCollection = allEvents.filter((event) => {
-            const eventCollectionRef = event.fields.collection as { value?: { entityId: string } };
-            return eventCollectionRef?.value?.entityId === oldCollectionEntity.id;
-          });
-
-          for (const oldEvent of eventsForCollection) {
-            const newEvent = tx.create("automationEvent", {
-              collection: newCollectionLoc,
-              positionTicks: (oldEvent.fields.positionTicks as { value: number }).value,
-              value: (oldEvent.fields.value as { value: number }).value,
-              slope: (oldEvent.fields.slope as { value: number }).value,
-              interpolation: (oldEvent.fields.interpolation as { value: number }).value,
-            });
-            result.eventIds.push(newEvent.id);
-          }
-        }
-      }
-    }
+    const allOldTracks = items.map((item) => item.oldTrack);
+    cloneRegionsAndEvents(entities, tx, allOldTracks, newTrackLoc, result);
   }
 
   return result;

@@ -1,4 +1,11 @@
-import type { NexusEntity, NexusLocation } from "@audiotool/nexus/document";
+import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
+
+/** Minimal transaction interface shared by execute, cables, and automation modules. */
+export type RecableTransaction = {
+  create(type: string, props: unknown): { id: string; location?: NexusLocation; fields: Record<string, unknown> };
+  remove(entity: { id: string }): void;
+  entities: EntityQuery;
+};
 
 export type RecableResult =
   | { ok: true; centroidChannels: number; cablesRecabled: number; revertPayload: RevertPayload; warnings: string[] }

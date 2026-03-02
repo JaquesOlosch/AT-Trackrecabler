@@ -1,5 +1,5 @@
 import type { SyncedDocument } from "@audiotool/nexus";
-import type { RecableResult } from "./types";
+import type { RecableResult, RecableTransaction } from "./types";
 import { runDiscovery } from "./discovery";
 import { buildPlan } from "./plan";
 import { applyPlan } from "./execute";
@@ -19,7 +19,7 @@ export async function recableOldCentroidToMixer(doc: SyncedDocument): Promise<Re
     }
     const plan = buildPlan(entities, discoveryResult);
     const warnings: string[] = [];
-    applyPlan(tx as never, plan, warnings);
+    applyPlan(tx as RecableTransaction, plan, warnings);
     return {
       ok: true,
       centroidChannels: plan.centroidChannels.length,

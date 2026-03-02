@@ -97,11 +97,13 @@ export function traceBackToLastMixer(
   return null;
 }
 
-/** Chain from last mixer output to mixer: first cable and all last cables. */
-export type CentroidOutputChain = {
+export type ForwardChainResult = {
   firstCable: NexusEntity<"desktopAudioCable">;
   lastCables: NexusEntity<"desktopAudioCable">[];
 };
+
+/** @deprecated Use ForwardChainResult instead */
+export type CentroidOutputChain = ForwardChainResult;
 
 /** Trace forward from last mixer (centroid, kobolt, minimixer, or merger) output to mixer channels. */
 export function traceForwardChainFromLastMixer(
@@ -113,135 +115,82 @@ export function traceForwardChainFromLastMixer(
   return outLoc ? traceForwardChainFromLocation(entities, outLoc, mixerChannelIds) : null;
 }
 
+/**
+ * Generic forward chain trace: find the first cable from `fromLocation`, then BFS until
+ * `isTarget` matches a cable's destination. Returns first cable and all terminal cables.
+ */
+function traceForwardChain(
+  entities: EntityQuery,
+  fromLocation: NexusLocation,
+  isTarget: (cable: NexusEntity<"desktopAudioCable">) => boolean
+): CentroidOutputChain | null {
+  const allCables = entities.ofTypes("desktopAudioCable").get() as NexusEntity<"desktopAudioCable">[];
+  const matching = allCables.filter(
+    (cable) =>
+      cable.fields.fromSocket.value.entityId === fromLocation.entityId &&
+      cable.fields.fromSocket.value.fieldIndex.length === fromLocation.fieldIndex.length &&
+      cable.fields.fromSocket.value.fieldIndex.every((n, i) => n === fromLocation.fieldIndex[i])
+  );
+  const firstCable = matching.length === 0 ? undefined : matching.slice().sort((a, b) => a.id.localeCompare(b.id))[0];
+  if (!firstCable) return null;
+
+  const chainEntityIds = new Set<string>([firstCable.fields.toSocket.value.entityId]);
+  const pending = [...chainEntityIds];
+  const lastCables: NexusEntity<"desktopAudioCable">[] = [];
+  const visited = new Set<string>();
+
+  while (pending.length > 0) {
+    const entityId = pending.pop()!;
+    if (visited.has(entityId)) continue;
+    visited.add(entityId);
+    const cablesFromCurrent = allCables
+      .filter((cable) => cable.fields.fromSocket.value.entityId === entityId)
+      .slice()
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const cableOut of cablesFromCurrent) {
+      const toId = cableOut.fields.toSocket.value.entityId;
+      if (isTarget(cableOut)) {
+        lastCables.push(cableOut);
+      } else if (!chainEntityIds.has(toId)) {
+        chainEntityIds.add(toId);
+        pending.push(toId);
+      }
+    }
+  }
+
+  return lastCables.length > 0 ? { firstCable, lastCables } : null;
+}
+
 export function traceForwardChainFromCentroid(
   entities: EntityQuery,
   centroid: NexusEntity<"centroid">,
   mixerChannelIds: Set<string>
 ): CentroidOutputChain | null {
-  const centroidOutputLoc = centroid.fields.audioOutput.location;
-  const allCables = entities.ofTypes("desktopAudioCable").get() as NexusEntity<"desktopAudioCable">[];
-  const matching = allCables.filter(
-    (c) =>
-      c.fields.fromSocket.value.entityId === centroid.id &&
-      c.fields.fromSocket.value.fieldIndex.length === centroidOutputLoc.fieldIndex.length &&
-      c.fields.fromSocket.value.fieldIndex.every((n, i) => n === centroidOutputLoc.fieldIndex[i])
+  return traceForwardChain(entities, centroid.fields.audioOutput.location, (cable) =>
+    mixerChannelIds.has(cable.fields.toSocket.value.entityId)
   );
-  const firstCable = matching.length === 0 ? undefined : matching.slice().sort((a, b) => a.id.localeCompare(b.id))[0];
-  if (!firstCable) return null;
-
-  const chainEntityIds = new Set<string>([firstCable.fields.toSocket.value.entityId]);
-  const pending = [...chainEntityIds];
-  const lastCables: NexusEntity<"desktopAudioCable">[] = [];
-  const visited = new Set<string>();
-
-  while (pending.length > 0) {
-    const entityId = pending.pop()!;
-    if (visited.has(entityId)) continue;
-    visited.add(entityId);
-    const cablesFromCurrent = allCables
-      .filter((c) => c.fields.fromSocket.value.entityId === entityId)
-      .slice()
-      .sort((a, b) => a.id.localeCompare(b.id));
-    for (const cableOut of cablesFromCurrent) {
-      const toId = cableOut.fields.toSocket.value.entityId;
-      if (mixerChannelIds.has(toId)) {
-        lastCables.push(cableOut);
-      } else if (!chainEntityIds.has(toId)) {
-        chainEntityIds.add(toId);
-        pending.push(toId);
-      }
-    }
-  }
-
-  return lastCables.length > 0 ? { firstCable, lastCables } : null;
 }
 
-/**
- * Chain from submixer output: trace all branches.
- * Returns first cable and all "last" cables (device output → target channel).
- */
 export function traceForwardChainFromSubmixer(
   entities: EntityQuery,
   submixer: NexusEntity,
   targetLocationKeys: Set<string>
-): { firstCable: NexusEntity<"desktopAudioCable">; lastCables: NexusEntity<"desktopAudioCable">[] } | null {
+): CentroidOutputChain | null {
   const outLoc = getSubmixerOutputLocation(submixer);
   if (!outLoc?.entityId) return null;
-  const allCables = entities.ofTypes("desktopAudioCable").get() as NexusEntity<"desktopAudioCable">[];
-  const matching = allCables.filter(
-    (c) =>
-      c.fields.fromSocket.value.entityId === submixer.id &&
-      c.fields.fromSocket.value.fieldIndex.length === outLoc.fieldIndex.length &&
-      c.fields.fromSocket.value.fieldIndex.every((n, i) => n === outLoc.fieldIndex[i])
+  return traceForwardChain(entities, outLoc, (cable) =>
+    targetLocationKeys.has(locationKey(cable.fields.toSocket.value))
   );
-  const firstCable = matching.length === 0 ? undefined : matching.slice().sort((a, b) => a.id.localeCompare(b.id))[0];
-  if (!firstCable) return null;
-  const chainEntityIds = new Set<string>([firstCable.fields.toSocket.value.entityId]);
-  const pending = [...chainEntityIds];
-  const lastCables: NexusEntity<"desktopAudioCable">[] = [];
-  const visited = new Set<string>();
-  while (pending.length > 0) {
-    const entityId = pending.pop()!;
-    if (visited.has(entityId)) continue;
-    visited.add(entityId);
-    const cablesFromCurrent = allCables
-      .filter((c) => c.fields.fromSocket.value.entityId === entityId)
-      .slice()
-      .sort((a, b) => a.id.localeCompare(b.id));
-    for (const cableOut of cablesFromCurrent) {
-      const toLoc = cableOut.fields.toSocket.value;
-      if (targetLocationKeys.has(locationKey(toLoc))) {
-        lastCables.push(cableOut);
-      } else if (!chainEntityIds.has(toLoc.entityId)) {
-        chainEntityIds.add(toLoc.entityId);
-        pending.push(toLoc.entityId);
-      }
-    }
-  }
-  return lastCables.length > 0 ? { firstCable, lastCables } : null;
 }
 
-/**
- * Trace forward from a given output location (e.g. merger audioOutput) to mixer channels.
- * Returns first cable (from that location) and all last cables (device output → mixer channel).
- */
 export function traceForwardChainFromLocation(
   entities: EntityQuery,
   fromLocation: NexusLocation,
   targetEntityIds: Set<string>
-): { firstCable: NexusEntity<"desktopAudioCable">; lastCables: NexusEntity<"desktopAudioCable">[] } | null {
-  const allCables = entities.ofTypes("desktopAudioCable").get() as NexusEntity<"desktopAudioCable">[];
-  const matching = allCables.filter(
-    (c) =>
-      c.fields.fromSocket.value.entityId === fromLocation.entityId &&
-      c.fields.fromSocket.value.fieldIndex.length === fromLocation.fieldIndex.length &&
-      c.fields.fromSocket.value.fieldIndex.every((n, i) => n === fromLocation.fieldIndex[i])
+): CentroidOutputChain | null {
+  return traceForwardChain(entities, fromLocation, (cable) =>
+    targetEntityIds.has(cable.fields.toSocket.value.entityId)
   );
-  const firstCable = matching.length === 0 ? undefined : matching.slice().sort((a, b) => a.id.localeCompare(b.id))[0];
-  if (!firstCable) return null;
-  const chainEntityIds = new Set<string>([firstCable.fields.toSocket.value.entityId]);
-  const pending = [...chainEntityIds];
-  const lastCables: NexusEntity<"desktopAudioCable">[] = [];
-  const visited = new Set<string>();
-  while (pending.length > 0) {
-    const entityId = pending.pop()!;
-    if (visited.has(entityId)) continue;
-    visited.add(entityId);
-    const cablesFromCurrent = allCables
-      .filter((c) => c.fields.fromSocket.value.entityId === entityId)
-      .slice()
-      .sort((a, b) => a.id.localeCompare(b.id));
-    for (const cableOut of cablesFromCurrent) {
-      const toId = cableOut.fields.toSocket.value.entityId;
-      if (targetEntityIds.has(toId)) {
-        lastCables.push(cableOut);
-      } else if (!chainEntityIds.has(toId)) {
-        chainEntityIds.add(toId);
-        pending.push(toId);
-      }
-    }
-  }
-  return lastCables.length > 0 ? { firstCable, lastCables } : null;
 }
 
 /**

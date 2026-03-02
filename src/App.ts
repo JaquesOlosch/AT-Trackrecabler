@@ -21,6 +21,14 @@ function getProjectIdFromUrl(projectUrl: string): string | null {
   }
 }
 
+function mdToHtml(text: string): string {
+  return text.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 const CLIENT_ID = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID ?? "";
 const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.0.0.1:5173/";
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
@@ -60,8 +68,8 @@ function openWhatThisToolDoesModal(): void {
 
   const dialog = document.createElement("div");
   dialog.className = "modal-dialog";
-  const doesHtml = TOOL_DESCRIPTION.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
-  const notHtml = TOOL_DESCRIPTION_NOT.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+  const doesHtml = mdToHtml(TOOL_DESCRIPTION);
+  const notHtml = mdToHtml(TOOL_DESCRIPTION_NOT);
   dialog.innerHTML = `
     <div class="modal-header">
       <h2 id="modal-title">What this tool does</h2>
@@ -94,6 +102,8 @@ function openWhatThisToolDoesModal(): void {
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
   document.body.style.overflow = "hidden";
+  const closeBtn = dialog.querySelector<HTMLButtonElement>(".modal-close");
+  closeBtn?.focus();
 }
 
 export async function createApp(): Promise<HTMLElement> {
@@ -102,7 +112,7 @@ export async function createApp(): Promise<HTMLElement> {
 
   const howToCard = document.createElement("section");
   howToCard.className = "card tool-description how-to-card";
-  howToCard.innerHTML = `<h2>How to use</h2><div class="tool-description-body">${TOOL_HOW_TO_USE.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>")}</div>`;
+  howToCard.innerHTML = `<h2>How to use</h2><div class="tool-description-body">${mdToHtml(TOOL_HOW_TO_USE)}</div>`;
 
   const title = document.createElement("h1");
   title.textContent = "Track Recabler";
@@ -200,7 +210,7 @@ function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn
     .catch((err) => {
       const errCard = document.createElement("div");
       errCard.className = "card";
-      errCard.innerHTML = `<p class="error">Failed to create Audiotool client: ${err instanceof Error ? err.message : String(err)}</p>`;
+      errCard.innerHTML = `<p class="error">Failed to create Audiotool client: ${errorMessage(err)}</p>`;
       container.appendChild(errCard);
     });
 }
@@ -213,8 +223,10 @@ function renderProjectConnect(
   card.className = "card";
   const label = document.createElement("label");
   label.textContent = "Original project URL (from beta.audiotool.com)";
+  label.htmlFor = "project-url-input";
   card.appendChild(label);
   const input = document.createElement("input");
+  input.id = "project-url-input";
   input.type = "url";
   input.placeholder = "https://beta.audiotool.com/…";
   card.appendChild(input);
@@ -281,7 +293,7 @@ function renderProjectConnect(
       renderDocumentUI(container, doc, client);
       card.remove();
     } catch (err) {
-      statusEl.textContent = err instanceof Error ? err.message : "Connection failed.";
+      statusEl.textContent = errorMessage(err);
       statusEl.className = "status error";
       connectBtn.disabled = false;
     }
@@ -332,7 +344,7 @@ function renderDocumentUI(
       statusEl.className = "status connected";
     })
     .catch((err) => {
-      statusEl.textContent = `Sync failed: ${err instanceof Error ? err.message : String(err)}`;
+      statusEl.textContent = `Sync failed: ${errorMessage(err)}`;
       statusEl.className = "status error";
     });
 
@@ -364,7 +376,7 @@ function renderDocumentUI(
         addLog(result.error, "removed");
       }
     } catch (err) {
-      addLog(`Error: ${err instanceof Error ? err.message : String(err)}`, "removed");
+      addLog(`Error: ${errorMessage(err)}`, "removed");
     } finally {
       recableBtn.disabled = false;
     }
@@ -392,7 +404,7 @@ function renderDocumentUI(
         undoBtn.disabled = false;
       }
     } catch (err) {
-      addLog(`Revert error: ${err instanceof Error ? err.message : String(err)}`, "removed");
+      addLog(`Revert error: ${errorMessage(err)}`, "removed");
       undoBtn.disabled = false;
     } finally {
       recableBtn.disabled = false;
