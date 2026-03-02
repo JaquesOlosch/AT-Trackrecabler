@@ -66,6 +66,20 @@ export function getSubmixerAuxLocations(
   return { sendLoc: aux.fields.audioOutput.location, returnLoc: aux.fields.audioInput.location };
 }
 
+/** Read the user-assigned displayName from a submixer or merger entity. Falls back to the entityType if not set. */
+export function getEntityDisplayName(entity: NexusEntity): string {
+  const fields = entity.fields as Record<string, { value?: unknown } | undefined>;
+  const name = fields.displayName?.value;
+  if (typeof name === "string" && name.trim()) return name.trim();
+  const typeLabels: Record<string, string> = {
+    centroid: "Centroid",
+    kobolt: "Kobolt",
+    minimixer: "Minimixer",
+    audioMerger: "Audio Merger",
+  };
+  return typeLabels[entity.entityType] ?? entity.entityType;
+}
+
 /** Get all centroidChannel entities belonging to a Centroid submixer. Returns an empty array for non-Centroid types (Minimixer and Kobolt have inline channels, not separate entities). */
 export function getSubmixerChannels(entities: EntityQuery, submixer: NexusEntity): NexusEntity[] {
   const id = submixer.id;

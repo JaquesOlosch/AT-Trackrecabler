@@ -7,6 +7,7 @@ import { copyAutomationForChannel, copyAuxAutomationForChannel, copyAutomationBe
 import type { AutoIds } from "./mapping/automation";
 import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity } from "./cables";
 import { locationKey } from "./tracing";
+import { getEntityDisplayName } from "./submixer";
 
 /**
  * Execute phase: apply the recable plan inside a single transaction.
@@ -173,7 +174,11 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
   type MergerInputEntry = { channel: NexusEntity<"mixerChannel">; sourceSubmixerId?: string; fromSerialized: SerializedLocation; colorIndex: number };
   const mergerInputEntries: MergerInputEntry[] = [];
   if (plan.mergerGroupSpec) {
-    const newGroup = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+    const mergerEntity = plan.lastMixerId ? entities.getEntity(plan.lastMixerId) as NexusEntity | null : null;
+    const mergerName = mergerEntity ? getEntityDisplayName(mergerEntity) : undefined;
+    const newGroup = tx.create("mixerGroup", {
+      ...(mergerName ? { displayParameters: { displayName: mergerName } } : {}),
+    } as Record<string, unknown>) as NexusEntity<"mixerGroup">;
     revertPayload.createdMixerGroupIds.push(newGroup.id);
     mergerGroupForSum = newGroup;
     const groupStripLoc = getStripLocation(newGroup);
@@ -305,7 +310,11 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     !plan.mergerGroupSpec &&
     (plan.directCables.length > 0 || (plan.childSubmixersMap.get(plan.lastMixerId)?.length ?? 0) > 0)
       ? (() => {
-          const group = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+          const lastMixerEntity = entities.getEntity(plan.lastMixerId!) as NexusEntity | null;
+          const lastMixerName = lastMixerEntity ? getEntityDisplayName(lastMixerEntity) : undefined;
+          const group = tx.create("mixerGroup", {
+            ...(lastMixerName ? { displayParameters: { displayName: lastMixerName } } : {}),
+          } as Record<string, unknown>) as NexusEntity<"mixerGroup">;
           revertPayload.createdMixerGroupIds.push(group.id);
           createdGroupBySubmixerId.set(plan.lastMixerId!, group);
           const groupLoc = getStripLocation(group);
@@ -335,7 +344,10 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
       newGroup = lastMixerGroup;
     } else {
       try {
-        newGroup = tx.create("mixerGroup", {} as Record<string, unknown>) as NexusEntity<"mixerGroup">;
+        const submixerName = getEntityDisplayName(submixer);
+        newGroup = tx.create("mixerGroup", {
+          ...(submixerName ? { displayParameters: { displayName: submixerName } } : {}),
+        } as Record<string, unknown>) as NexusEntity<"mixerGroup">;
       } catch {
         continue;
       }
