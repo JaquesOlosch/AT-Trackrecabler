@@ -1,9 +1,26 @@
 import type { NexusLocation, NexusEntity, EntityQuery } from "@audiotool/nexus/document";
 
+/**
+ * Shared mock factories for unit testing the recabler modules.
+ *
+ * The Audiotool SDK types (NexusEntity, EntityQuery, NexusLocation) are complex
+ * runtime objects. These factories create lightweight stand-ins that satisfy the
+ * type constraints used by the recabler code.
+ *
+ * - `mockLoc` — Create a NexusLocation (entityId + fieldIndex).
+ * - `mockCable` — Create a desktopAudioCable entity with from/to sockets and color.
+ * - `mockEntity` — Create any entity type with arbitrary fields.
+ * - `mockEntityQuery` — Build a queryable collection from an array of entities.
+ *   Supports ofTypes().get(), getOne(), pointingTo.locations(), pointingTo.entities(),
+ *   and getEntity() — the subset of EntityQuery used by the recabler.
+ */
+
+/** Create a mock NexusLocation with the given entityId and fieldIndex. */
 export function mockLoc(entityId: string, fieldIndex: number[] = []): NexusLocation {
   return { entityId, fieldIndex } as unknown as NexusLocation;
 }
 
+/** Create a mock desktopAudioCable entity with from/to socket locations and optional colorIndex. */
 export function mockCable(
   id: string,
   fromEntityId: string,
@@ -23,6 +40,7 @@ export function mockCable(
   } as unknown as NexusEntity<"desktopAudioCable">;
 }
 
+/** Create a mock entity of any type with arbitrary fields. Optionally attach a location. */
 export function mockEntity(
   id: string,
   entityType: string,
@@ -34,6 +52,7 @@ export function mockEntity(
   return entity as never;
 }
 
+/** Recursively walk a fields object to find all NexusLocation-shaped values (objects with entityId + fieldIndex). Used by mockEntityQuery to implement pointingTo queries. */
 function collectLocations(fields: Record<string, unknown>): NexusLocation[] {
   const locs: NexusLocation[] = [];
   const seen = new WeakSet();
@@ -56,6 +75,7 @@ function collectLocations(fields: Record<string, unknown>): NexusLocation[] {
   return locs;
 }
 
+/** Compare two NexusLocations by value (entityId + fieldIndex array). Used internally by mockEntityQuery. */
 function locMatches(a: NexusLocation, b: NexusLocation): boolean {
   return (
     a.entityId === b.entityId &&
@@ -68,6 +88,7 @@ function locMatches(a: NexusLocation, b: NexusLocation): boolean {
  * Build a mock EntityQuery from a flat array of entities (including cables).
  * Supports ofTypes().get(), ofTypes().getOne(), ofTypes().pointingTo.locations().get(),
  * ofTypes().pointingTo.entities().get(), and getEntity().
+ * This mock is sufficient for all recabler modules (discovery, cables, tracing, submixer, execute, revert, automation).
  */
 export function mockEntityQuery(allEntities: NexusEntity[]): EntityQuery {
   const byId = new Map<string, NexusEntity>();

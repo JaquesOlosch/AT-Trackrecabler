@@ -4,12 +4,36 @@ import { locationMatches, locationKey } from "../tracing";
 import { CENTROID_TO_MIXER_PARAM_MAP } from "../constants";
 import { getMixerMidEqParamPath } from "./eq";
 
+/**
+ * Automation copying: transfer automation data from old Centroid channels to new mixer entities.
+ *
+ * Audiotool's automation system has this hierarchy:
+ * - **automationTrack**: Points to an automatedParameter (a NexusLocation on some entity field).
+ *   Each track has an orderAmongTracks for display ordering and an isEnabled flag.
+ * - **automationRegion**: Belongs to a track. Has position/duration in ticks and references
+ *   an automationCollection. A region is like a clip of automation data.
+ * - **automationCollection**: Container for automation events. Multiple regions can share one
+ *   collection (like a shared clip).
+ * - **automationEvent**: A single automation point within a collection. Has position (ticks),
+ *   value, slope, and interpolation type.
+ *
+ * When recabling, we need to copy automation from old CentroidChannel parameters (e.g.
+ * postGain, panning, EQ) to the corresponding new MixerChannel parameters. We also copy
+ * aux send automation to the new MixerAuxRoute gain parameters.
+ *
+ * Nexus allows at most one automation track per parameter location, so we use
+ * usedAutomationTargetKeys to avoid creating duplicate tracks.
+ */
+
+/** IDs of all automation entities created during a copy operation. Used to track what was created for the revert payload. */
 export type AutoIds = { trackIds: string[]; collectionIds: string[]; regionIds: string[]; eventIds: string[] };
 
+/** Create an empty AutoIds accumulator. */
 export function emptyAutoIds(): AutoIds {
   return { trackIds: [], collectionIds: [], regionIds: [], eventIds: [] };
 }
 
+/** Merge source AutoIds into target (mutates target). Used to combine results from multiple copy operations. */
 export function mergeAutoIds(target: AutoIds, source: AutoIds): void {
   target.trackIds.push(...source.trackIds);
   target.collectionIds.push(...source.collectionIds);
@@ -17,6 +41,7 @@ export function mergeAutoIds(target: AutoIds, source: AutoIds): void {
   target.eventIds.push(...source.eventIds);
 }
 
+/** Internal type for reading automation region timing fields from the Nexus entity. */
 type RegionFields = {
   positionTicks?: { value: number };
   durationTicks?: { value: number };
@@ -27,8 +52,9 @@ type RegionFields = {
 };
 
 /**
- * Clone all regions and events from old automation tracks into a new track.
- * Shared by all three copy-automation functions.
+ * Deep-copy all automation regions and events from old tracks into a newly created track.
+ * For each old region: creates a new collection, clones the region with its timing data,
+ * then copies all events from the old collection to the new one.
  */
 function cloneRegionsAndEvents(
   entities: EntityQuery,
@@ -91,7 +117,8 @@ function cloneRegionsAndEvents(
 }
 
 /**
- * Get the NexusLocation for a nested field path on an entity.
+ * Navigate a dot-path (e.g. ['faderParameters', 'postGain']) on an entity's fields tree and
+ * return the NexusLocation at the final field. Returns null if any segment is missing.
  */
 export function getNestedFieldLocation(entity: NexusEntity, path: string[]): NexusLocation | null {
   let current: unknown = entity.fields;
@@ -112,7 +139,9 @@ export function getNestedFieldLocation(entity: NexusEntity, path: string[]): Nex
 }
 
 /**
- * Copy automation from one parameter location to another.
+ * Copy automation from one parameter location to another (generic). Finds all automation tracks
+ * targeting sourceLocation, creates a new track targeting targetLocation with the same enabled
+ * state, and clones all regions/events.
  */
 export function copyAutomationBetweenLocations(
   entities: EntityQuery,
@@ -145,8 +174,9 @@ export function copyAutomationBetweenLocations(
 }
 
 /**
- * Copy aux send automation from a CentroidChannel to a MixerAuxRoute.
- * Uses usedAutomationTargetKeys to avoid creating multiple tracks for the same parameter (Nexus allows at most one).
+ * Copy aux send automation from a CentroidChannel's aux1SendGain/aux2SendGain to the
+ * corresponding MixerAuxRoute gain parameters. Uses usedAutomationTargetKeys to prevent
+ * duplicate tracks (multiple centroid channels might map to the same aux route).
  */
 export function copyAuxAutomationForChannel(
   entities: EntityQuery,
@@ -208,7 +238,11 @@ export function copyAuxAutomationForChannel(
 }
 
 /**
- * Copy automation from a CentroidChannel to a new MixerChannel.
+ * Copy all parameter automation from a CentroidChannel to a new MixerChannel. Maps each
+ * centroid parameter (postGain, panning, preGain, EQ, etc.) to its mixer equivalent using
+ * CENTROID_TO_MIXER_PARAM_MAP. Mid-EQ automation uses getMixerMidEqParamPath to pick the
+ * right band. When multiple centroid parameters map to the same mixer parameter (e.g.
+ * eqMidGainDb and eqMidFrequency both going to lowMid), they are grouped under one track.
  */
 export function copyAutomationForChannel(
   entities: EntityQuery,

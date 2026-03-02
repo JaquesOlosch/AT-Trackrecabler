@@ -1,3 +1,4 @@
+/** Tests for submixer inspection: aux locations, channel refs, child submixers, and hierarchy building for all three submixer types (Centroid, Kobolt, Minimixer). */
 import { describe, it, expect } from "vitest";
 import {
   getCentroidAuxLocations,

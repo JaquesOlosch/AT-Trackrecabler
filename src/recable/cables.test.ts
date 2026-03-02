@@ -1,3 +1,4 @@
+/** Tests for cable utilities: getCableColor, toRemovedCable, createCableIfSocketsFree, getLocationFromEntity, collectAuxCables, wireAuxCables. */
 import { describe, it, expect } from "vitest";
 import { getCableColor, toRemovedCable, createCableIfSocketsFree, getLocationFromEntity, collectAuxCables, wireAuxCables } from "./cables";
 import { mockLoc, mockCable, mockEntity, mockEntityQuery } from "./__test-utils__/mock-entities";

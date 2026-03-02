@@ -2,6 +2,22 @@ import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/d
 import type { AuxCableSpec, RecableTransaction, RemovedCable, SerializedLocation } from "./types";
 import { locationKey, locationMatches, serializedLocation } from "./tracing";
 
+/**
+ * Cable utilities: creating, serializing, collecting, and wiring audio cables.
+ *
+ * In Audiotool, audio routing is done via `desktopAudioCable` entities. Each cable
+ * has a `fromSocket` (output of one device) and a `toSocket` (input of another).
+ * Cables also carry a `colorIndex` for visual identification in the UI.
+ *
+ * This module provides helpers for:
+ * - Serializing cables for the revert payload (toRemovedCable)
+ * - Creating cables with socket-uniqueness checks (createCableIfSocketsFree)
+ * - Collecting aux FX-loop cables (collectAuxCables)
+ * - Wiring collected aux cables to new mixer aux entities (wireAuxCables)
+ * - Resolving serialized locations back to live NexusLocations (getLocationFromEntity)
+ */
+
+/** Compare a live NexusLocation against a SerializedLocation (plain JSON). Used internally to match entity fields to serialized cable endpoints. */
 function locationMatchesSerialized(loc: NexusLocation, ser: SerializedLocation): boolean {
   return loc.entityId === ser.entityId && loc.fieldIndex.length === ser.fieldIndex.length && loc.fieldIndex.every((n, i) => n === ser.fieldIndex[i]);
 }
@@ -20,7 +36,11 @@ export function toRemovedCable(cable: NexusEntity<"desktopAudioCable">): Removed
   };
 }
 
-/** Creates cable only if both fromSocket and toSocket are unused. Returns created cable id or null if skipped. */
+/**
+ * Creates cable only if both fromSocket and toSocket are unused. Returns created cable id or null if skipped.
+ * Each audio socket can only have one cable connected. The usedFromSocketKeys/usedToSocketKeys sets track
+ * which sockets are taken during the current transaction to prevent double-wiring.
+ */
 export function createCableIfSocketsFree(
   tx: Pick<RecableTransaction, "create">,
   fromSocket: NexusLocation,
@@ -47,7 +67,12 @@ export function createCableIfSocketsFree(
   return c.id;
 }
 
-/** Collect aux cables from send location and to return location. Returns spec + cables to remove. */
+/**
+ * Find all cables in the aux FX loop for a given aux bus. 'Send' cables leave the aux send output
+ * (going to the first FX device). 'Return' cables arrive at the aux return input (coming from the
+ * last FX device). Returns null if the aux bus has no cables (unused aux). The returned
+ * cablesToRemove list is used to remove these cables during recabling.
+ */
 export function collectAuxCables(
   entities: EntityQuery,
   allCables: NexusEntity<"desktopAudioCable">[],
@@ -78,7 +103,12 @@ export function collectAuxCables(
   return { spec: { send: sendList, return: returnList }, cablesToRemove };
 }
 
-/** Wire aux send/return cables from spec to a new aux entity. Returns created cable IDs. */
+/**
+ * Recreate an aux FX loop on a new mixer aux entity. For each 'send' cable in the spec, creates a
+ * cable from the new aux's insert-send to the original target device. For each 'return' cable,
+ * creates a cable from the original source device to the new aux's insert-return. This preserves
+ * the FX chain (e.g. reverb, delay) connected to the aux bus.
+ */
 export function wireAuxCables(
   entities: EntityQuery,
   tx: Pick<RecableTransaction, "create">,
@@ -112,7 +142,12 @@ export function wireAuxCables(
   return createdCableIds;
 }
 
-/** Get NexusLocation from an existing entity's field (by entityId + fieldIndex). Uses SDK's _resolveField when available, else scans entity fields. */
+/**
+ * Resolve a SerializedLocation (entityId + fieldIndex) back to a live NexusLocation. First tries
+ * the SDK's internal _resolveField method (fast path), then falls back to scanning all entity
+ * fields for a matching location. Returns null if the entity no longer exists or the field
+ * cannot be found.
+ */
 export function getLocationFromEntity(entities: EntityQuery, loc: SerializedLocation): NexusLocation | null {
   const entity = entities.getEntity(loc.entityId);
   if (!entity) return null;

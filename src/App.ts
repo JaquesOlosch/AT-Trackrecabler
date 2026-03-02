@@ -6,9 +6,27 @@ import {
 } from "@audiotool/nexus";
 import { recableOldCentroidToMixer, revertRecable, type RevertPayload } from "./recable";
 
+/**
+ * Application UI: single-page web app for the Track Recabler tool.
+ *
+ * This module builds the entire UI imperatively using DOM APIs (no framework).
+ * The app flow has four screens, shown progressively:
+ *
+ * 1. **Logged out** — Shows a login button. On click, redirects to Audiotool OAuth.
+ * 2. **Logged in** — Shows user info and a project URL input.
+ * 3. **Project connect** — User pastes the original project URL. On "Create copy & connect",
+ *    the app creates a remix (copy) via the Audiotool API, opens it in a new tab, and
+ *    connects to the remix's SyncedDocument.
+ * 4. **Document UI** — Shows Recable / Undo / Reset buttons and a live event log.
+ *    Cable create/remove events are streamed to the log in real time.
+ *
+ * The "How to use" card is always at the bottom of the page. A modal dialog provides
+ * detailed information about what the tool does and doesn't do.
+ */
+
 const STUDIO_BASE = "https://beta.audiotool.com/studio";
 
-/** Extract project id from a studio URL (e.g. …?project=id or …/studio/id). Not exported by SDK main entry in 0.0.12. */
+/** Extract the project ID from an Audiotool studio URL. Supports both query parameter format (?project=id) and path format (/studio/id). */
 function getProjectIdFromUrl(projectUrl: string): string | null {
   try {
     const u = new URL(projectUrl);
@@ -21,10 +39,12 @@ function getProjectIdFromUrl(projectUrl: string): string | null {
   }
 }
 
+/** Minimal markdown-to-HTML: convert **bold** to <strong> and newlines to <br>. */
 function mdToHtml(text: string): string {
   return text.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
 }
 
+/** Extract a human-readable error message from an unknown thrown value. */
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -59,6 +79,7 @@ const TOOL_HOW_TO_USE = `
 4. **Undo** — Click **Undo recable** to revert the recable in the remix. Check the log for any warnings.
 `;
 
+/** Open an accessible modal dialog showing the tool description and limitations. The modal traps focus, closes on Escape/overlay-click, and restores body scroll on close. */
 function openWhatThisToolDoesModal(): void {
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
@@ -106,6 +127,7 @@ function openWhatThisToolDoesModal(): void {
   closeBtn?.focus();
 }
 
+/** Build and return the root app element. Initializes OAuth, renders the appropriate screen based on login status, and appends the how-to card. */
 export async function createApp(): Promise<HTMLElement> {
   const container = document.createElement("div");
   container.className = "app";
@@ -160,6 +182,7 @@ export async function createApp(): Promise<HTMLElement> {
   return container;
 }
 
+/** Render the login screen with an error message (if any) and a login button. */
 function renderLoggedOut(
   container: HTMLElement,
   status: Extract<LoginStatus, { loggedIn: false }>
@@ -185,6 +208,7 @@ function renderLoggedOut(
   container.appendChild(card);
 }
 
+/** Render the logged-in screen: show username, logout button, and initialize the Audiotool API client. */
 function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn: true }): void {
   const card = document.createElement("div");
   card.className = "card";
@@ -215,6 +239,7 @@ function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn
     });
 }
 
+/** Render the project URL input and 'Create copy & connect' button. On connect: validates URL, creates a remix copy via the API, opens it in a new tab, and transitions to the document UI. */
 function renderProjectConnect(
   container: HTMLElement,
   client: Awaited<ReturnType<typeof createAudiotoolClient>>
@@ -302,6 +327,7 @@ function renderProjectConnect(
   container.appendChild(card);
 }
 
+/** Render the main recable interface: Recable/Undo/Reset buttons, live event log, and document connection status. Subscribes to cable create/remove events for real-time logging. */
 function renderDocumentUI(
   container: HTMLElement,
   doc: SyncedDocument,

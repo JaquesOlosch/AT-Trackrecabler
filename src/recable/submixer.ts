@@ -5,7 +5,22 @@ import { locationMatches } from "./tracing";
 import { traceBackToSubmixer } from "./tracing";
 import { centroidEqToMixerEq } from "./mapping/eq";
 
-/** Centroid aux: send (output) and return (input) locations. */
+/**
+ * Submixer inspection: reading channel inputs, aux buses, and hierarchy from old mixer entities.
+ *
+ * Audiotool has three submixer types with different internal structures:
+ * - **Centroid**: Has separate `centroidChannel` entities (external), each with audioInput,
+ *   postGain, panning, EQ, aux sends. Aux buses: aux1, aux2 (nested field with audioOutput/audioInput).
+ * - **Minimixer**: 4 inline channels (channel1–channel4) with gain, panning, auxSendGain.
+ *   Single aux bus via auxSendOutput/auxReturnInput top-level fields.
+ * - **Kobolt**: Variable-length channel array (channels.array[]) with gain, panning.
+ *   No aux capability.
+ *
+ * This module abstracts over these differences so discovery/execute can treat all
+ * submixers uniformly via SubmixerChannelRef and aux location helpers.
+ */
+
+/** Get the send (output) and return (input) locations for a Centroid's aux bus. The Centroid's aux1/aux2 are nested entities with their own audioOutput and audioInput fields. */
 export function getCentroidAuxLocations(
   centroid: NexusEntity<"centroid">,
   auxKey: "aux1" | "aux2"
@@ -15,6 +30,7 @@ export function getCentroidAuxLocations(
   return { sendLoc: aux.fields.audioOutput.location, returnLoc: aux.fields.audioInput.location };
 }
 
+/** Get the aux send gain value and its field location from a Centroid. The location is needed for automation copying (the automation track points to this location). */
 export function getCentroidAuxSendGain(
   centroid: NexusEntity<"centroid">,
   auxKey: "aux1" | "aux2"
@@ -31,7 +47,8 @@ export function getCentroidAuxSendGain(
 }
 
 /**
- * Submixer aux locations. Centroid: aux1/aux2 with nested fields. Minimixer: single aux via auxSendOutput/auxReturnInput. Kobolt has no aux.
+ * Unified aux location getter for any submixer type. For Minimixer, reads the top-level auxSendOutput/auxReturnInput.
+ * For Centroid, reads the nested aux1/aux2 fields. Returns null for unsupported combinations (e.g. Kobolt has no aux).
  */
 export function getSubmixerAuxLocations(
   submixer: NexusEntity,
@@ -49,7 +66,7 @@ export function getSubmixerAuxLocations(
   return { sendLoc: aux.fields.audioOutput.location, returnLoc: aux.fields.audioInput.location };
 }
 
-/** Channels of a submixer (centroidChannel entities for centroid; nested for kobolt/minimixer). */
+/** Get all centroidChannel entities belonging to a Centroid submixer. Returns an empty array for non-Centroid types (Minimixer and Kobolt have inline channels, not separate entities). */
 export function getSubmixerChannels(entities: EntityQuery, submixer: NexusEntity): NexusEntity[] {
   const id = submixer.id;
   const type = submixer.entityType;
@@ -68,8 +85,8 @@ export function getSubmixerChannels(entities: EntityQuery, submixer: NexusEntity
 }
 
 /**
- * Channel/input refs for the last mixer (centroid, kobolt, minimixer, or merger).
- * For merger: one ref per audioInputA/B/C with default params.
+ * Get channel input references for the last mixer. For an audioMerger, returns one ref per input (A/B/C)
+ * with default gain. For submixers, delegates to getSubmixerChannelRefs.
  */
 export function getLastMixerChannelRefs(entities: EntityQuery, lastMixer: NexusEntity): SubmixerChannelRef[] {
   if (lastMixer.entityType === "audioMerger") {
@@ -84,7 +101,11 @@ export function getLastMixerChannelRefs(entities: EntityQuery, lastMixer: NexusE
   return getSubmixerChannelRefs(entities, lastMixer);
 }
 
-/** All channel input locations and params for a submixer. */
+/**
+ * Read all channel inputs and their current settings from a submixer. Returns a SubmixerChannelRef per channel,
+ * containing the input location and gain/pan/EQ/aux values. The returned refs are used to create new mixer
+ * channels with matching settings.
+ */
 export function getSubmixerChannelRefs(entities: EntityQuery, submixer: NexusEntity): SubmixerChannelRef[] {
   const type = submixer.entityType;
   if (type === "centroid") {
@@ -150,7 +171,10 @@ export function getSubmixerChannelRefs(entities: EntityQuery, submixer: NexusEnt
   return [];
 }
 
-/** Submixers whose output is cabled to one of this submixer's channel inputs. */
+/**
+ * Find submixers that feed into this submixer's channel inputs. Traces each input cable backward to find
+ * a submixer source, excluding aux return cables (which are FX loops, not channel feeds) and the submixer itself.
+ */
 export function getChildSubmixers(entities: EntityQuery, submixer: NexusEntity): NexusEntity[] {
   const channelRefs = getSubmixerChannelRefs(entities, submixer);
   const submixerAuxReturnLocs: NexusLocation[] = [];
@@ -175,7 +199,12 @@ export function getChildSubmixers(entities: EntityQuery, submixer: NexusEntity):
   return result;
 }
 
-/** Build set of all submixers in the tree and topo order (inner first). */
+/**
+ * Discover the full submixer hierarchy and produce a topological processing order. Starting from top-level
+ * submixer IDs, recursively finds children. Returns topoOrder (innermost submixers first — a child is always
+ * processed before its parent) and childSubmixersMap (parent → child IDs). The topo order ensures that when
+ * we create groups for each submixer, child groups already exist and can be nested inside parent groups.
+ */
 export function buildSubmixerTreeAndOrder(
   topLevelSubmixerIds: Iterable<string>,
   entities: EntityQuery

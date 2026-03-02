@@ -1,3 +1,4 @@
+/** Tests for cable graph traversal: location helpers, backward tracing, forward chain tracing, branch path lengths, and aux chain exits. */
 import { describe, it, expect } from "vitest";
 import type { NexusLocation } from "@audiotool/nexus/document";
 import {

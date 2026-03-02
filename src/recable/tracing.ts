@@ -2,20 +2,45 @@ import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/d
 import type { SerializedLocation } from "./types";
 import { isChannelOrMixerEntity, isSubmixer, isLastMixerEntity } from "./constants";
 
+/**
+ * Cable graph traversal: tracing audio signal paths through the project.
+ *
+ * The audio graph in Audiotool is a directed graph where entities are nodes and
+ * desktopAudioCable entities are edges (fromSocket → toSocket). This module walks
+ * the graph in both directions:
+ *
+ * **Backward tracing** (traceBackTo*): Starting from a mixer channel input, follow
+ * cables upstream to find the submixer or last mixer that feeds it. Used during
+ * discovery to identify which device is the "last mixer" before the stagebox.
+ *
+ * **Forward tracing** (traceForwardChain*): Starting from a mixer output, follow
+ * cables downstream through FX devices until reaching a target (mixer channel or
+ * merger input). Returns the first and last cables of the chain — these become the
+ * boundaries for the master/group insert wiring.
+ *
+ * All trace functions use visited-sets to handle cycles in the graph.
+ */
+
+/** Convert a live NexusLocation to a plain-JSON SerializedLocation (safe for storage/comparison). */
 export function serializedLocation(loc: NexusLocation): SerializedLocation {
   return { entityId: loc.entityId, fieldIndex: [...loc.fieldIndex] };
 }
 
+/** Produce a unique string key for a NexusLocation. Used as a Map/Set key for deduplication. */
 export function locationKey(loc: NexusLocation): string {
   return `${loc.entityId}:${loc.fieldIndex.join(",")}`;
 }
 
+/** Deep-compare two NexusLocations by entityId and fieldIndex values. */
 export function locationMatches(a: NexusLocation, b: NexusLocation): boolean {
   return a.entityId === b.entityId && a.fieldIndex.length === b.fieldIndex.length && a.fieldIndex.every((n, i) => n === b.fieldIndex[i]);
 }
 
 /**
  * Trace backwards from a location: follow cables until we find a submixer (centroid, kobolt, or minimixer).
+ * Starting from `location`, find cables whose toSocket points here. For each cable, check if the source
+ * entity (fromSocket) is a submixer — if so, return it. Otherwise, find all cables feeding that entity
+ * and recurse. The visited set prevents infinite loops in cyclic graphs.
  */
 export function traceBackToSubmixer(
   entities: EntityQuery,
@@ -50,7 +75,7 @@ export function traceBackToSubmixer(
   return null;
 }
 
-/** Trace backwards from a location until we find a centroid. */
+/** Like traceBackToSubmixer but only returns centroid entities. Returns null if the nearest submixer upstream is not a centroid. */
 export function traceBackToCentroid(
   entities: EntityQuery,
   location: NexusLocation,
@@ -61,8 +86,8 @@ export function traceBackToCentroid(
 }
 
 /**
- * Trace backwards from a location until we find the last mixer before stagebox:
- * centroid, kobolt, minimixer, or audioMerger.
+ * Like traceBackToSubmixer but accepts any last-mixer type (centroid, kobolt, minimixer, or audioMerger).
+ * Trace backwards from a location until we find the last mixer before stagebox.
  */
 export function traceBackToLastMixer(
   entities: EntityQuery,
@@ -97,6 +122,11 @@ export function traceBackToLastMixer(
   return null;
 }
 
+/**
+ * The result of a forward chain trace: the first cable leaving the source, and all terminal cables
+ * reaching the target. For a linear chain (A→B→C→target), firstCable is A→B and lastCables is
+ * [C→target]. For branching chains (e.g. through a splitter), lastCables contains one entry per branch.
+ */
 export type ForwardChainResult = {
   firstCable: NexusEntity<"desktopAudioCable">;
   lastCables: NexusEntity<"desktopAudioCable">[];
@@ -105,7 +135,7 @@ export type ForwardChainResult = {
 /** @deprecated Use ForwardChainResult instead */
 export type CentroidOutputChain = ForwardChainResult;
 
-/** Trace forward from last mixer (centroid, kobolt, minimixer, or merger) output to mixer channels. */
+/** Trace the FX chain from the last mixer's output to the stagebox mixer channels. */
 export function traceForwardChainFromLastMixer(
   entities: EntityQuery,
   lastMixer: NexusEntity,
@@ -116,8 +146,9 @@ export function traceForwardChainFromLastMixer(
 }
 
 /**
- * Generic forward chain trace: find the first cable from `fromLocation`, then BFS until
- * `isTarget` matches a cable's destination. Returns first cable and all terminal cables.
+ * Core forward-trace algorithm. From `fromLocation`, find the first outgoing cable. Then BFS through
+ * intermediate entities, collecting cables that reach a target (per `isTarget`). Entities are
+ * visited at most once (cycle-safe). Returns null if no path reaches the target.
  */
 function traceForwardChain(
   entities: EntityQuery,
@@ -161,6 +192,7 @@ function traceForwardChain(
   return lastCables.length > 0 ? { firstCable, lastCables } : null;
 }
 
+/** Trace the FX chain from a centroid's audio output to the stagebox mixer channels. */
 export function traceForwardChainFromCentroid(
   entities: EntityQuery,
   centroid: NexusEntity<"centroid">,
@@ -171,6 +203,7 @@ export function traceForwardChainFromCentroid(
   );
 }
 
+/** Trace the FX chain from any submixer's output to the next chain endpoint (another submixer's input or merger input). */
 export function traceForwardChainFromSubmixer(
   entities: EntityQuery,
   submixer: NexusEntity,
@@ -183,6 +216,7 @@ export function traceForwardChainFromSubmixer(
   );
 }
 
+/** Trace the FX chain from an arbitrary location to any entity in the target set. */
 export function traceForwardChainFromLocation(
   entities: EntityQuery,
   fromLocation: NexusLocation,
@@ -194,9 +228,9 @@ export function traceForwardChainFromLocation(
 }
 
 /**
- * For a submixer chain (firstCable + lastCables), compute the path length (number of cable hops
- * from the first device) to the entity that emits each lastCable. Used to pick the "shortest path"
- * branch to connect to the group's insert return (e.g. when a splitter has one direct and one FX branch).
+ * BFS from the first device in the chain to compute how many cable-hops each entity is from the start.
+ * Used to pick the shortest-path branch for the group's insert-return connection (e.g. when a splitter
+ * has one direct branch and one FX branch, prefer the direct one).
  */
 export function getSubmixerChainBranchPathLengths(
   entities: EntityQuery,
@@ -231,6 +265,7 @@ export function getSubmixerChainBranchPathLengths(
   return distanceByEntityId;
 }
 
+/** Get the audio output location of a submixer. Tries audioOutput first, then mainOutput (different submixer types use different field names). */
 export function getSubmixerOutputLocation(submixer: NexusEntity): NexusLocation | null {
   const fields = submixer.fields as Record<string, { location?: NexusLocation } | undefined>;
   return fields.audioOutput?.location ?? fields.mainOutput?.location ?? null;
@@ -245,8 +280,9 @@ export function getLastMixerOutputLocation(lastMixer: NexusEntity): NexusLocatio
 }
 
 /**
- * Trace a submixer's aux chain from the send; find cables from devices in the chain that go to
- * something other than this submixer's aux return (e.g. another centroid's channel).
+ * Find cables from FX devices in an aux chain that feed back into mixer infrastructure (e.g. a reverb
+ * in the aux chain that also sends to another centroid channel). These 'exit cables' need their own
+ * mixer channels in the new mixer so the signal path is preserved.
  */
 export function traceAuxChainExits(
   entities: EntityQuery,

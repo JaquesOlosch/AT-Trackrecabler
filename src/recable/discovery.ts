@@ -7,11 +7,41 @@ import { traceForwardChainFromSubmixer, getSubmixerChainBranchPathLengths, getSu
 import { getCentroidAuxLocations, getCentroidAuxSendGain, getSubmixerAuxLocations, getSubmixerChannelRefs, getLastMixerChannelRefs, buildSubmixerTreeAndOrder } from "./submixer";
 import { collectAuxCables, toRemovedCable, getCableColor } from "./cables";
 
+/**
+ * Discovery phase: analyze the existing audio graph to determine what needs recabling.
+ *
+ * This is the first phase of the recabler pipeline. It reads the project's entities and
+ * cables (without modifying anything) and produces a DiscoveryResult containing:
+ *
+ * 1. **Last mixer identification** — Find the centroid/kobolt/minimixer/merger whose output
+ *    feeds the stagebox mixer channel. This is the "root" of the old mix.
+ *
+ * 2. **Channel cable collection** — For each of the last mixer's channel inputs, find the
+ *    cable feeding it and pair it with the channel's settings (gain, pan, EQ, etc.).
+ *
+ * 3. **Cable classification** — Separate cables into "direct" (instrument → last mixer) and
+ *    "submixer-sourced" (instrument → child submixer → last mixer).
+ *
+ * 4. **Chain/merger routing** — If the last mixer has an FX chain to the stagebox (e.g.
+ *    compressor → EQ), capture it as a MasterChainSpec. If an audioMerger is involved
+ *    (either as the last mixer or in the chain), build a MergerGroupSpec.
+ *
+ * 5. **Submixer tree** — Build the hierarchy of child submixers and their topological order.
+ *
+ * 6. **Aux collection** — For each submixer's aux buses, collect the FX-loop cables.
+ *
+ * 7. **Per-submixer specs** — For each submixer in topo order, collect instrument cables,
+ *    FX-insert chains, aux specs, and aux chain exit cables.
+ *
+ * All cables that will be removed during recabling are tracked in the various removed* arrays
+ * (for the revert payload) and in cablesToRemove (for the execute phase to actually delete them).
+ */
+
 /* ------------------------------------------------------------------ */
-/*  Helpers – extracted from runDiscovery to reduce duplication        */
+/*  Helpers – reusable building blocks for the discovery logic         */
 /* ------------------------------------------------------------------ */
 
-/** Build a ChainSpec from a forward-chain trace, computing insertReturnCableIndex for multi-branch chains. */
+/** Serialize a forward-chain trace result into a ChainSpec. For multi-branch chains (e.g. through a splitter), computes which branch has the shortest path to use as the insert-return connection. */
 function buildChainSpec(entities: EntityQuery, chain: ForwardChainResult): ChainSpec {
   const lastCables = chain.lastCables.map((lc) => ({
     lastFrom: serializedLocation(lc.fields.fromSocket.value),
@@ -37,7 +67,7 @@ function buildChainSpec(entities: EntityQuery, chain: ForwardChainResult): Chain
   };
 }
 
-/** Record first + last cables of a chain as removed; returns serialized representations. */
+/** Mark all cables in a chain (first + last) for removal and serialize them for the revert payload. */
 function recordChainCablesAsRemoved(
   chain: ForwardChainResult,
   addCableToRemove: (c: NexusEntity<"desktopAudioCable">) => void,
@@ -52,7 +82,7 @@ function recordChainCablesAsRemoved(
   return { first, last };
 }
 
-/** Build MasterChainSpec from a chain, master entity, and the last-mixer/merger output location. */
+/** Build a MasterChainSpec by combining the chain trace with the mixer master's insert send/return locations and the last mixer's audio output. */
 function buildMasterChainSpec(
   chain: ForwardChainResult,
   master: NexusEntity<"mixerMaster">,
@@ -74,7 +104,9 @@ function buildMasterChainSpec(
 
 /**
  * For a submixer feeding a merger, collect its instrument cables and optional FX-insert chain.
- * Returns null when no instrument cables are found (the submixer is not a meaningful merger input).
+ * Returns null when no instrument cables are found. Instrument cables are those that feed the
+ * submixer's channels from non-submixer sources (i.e. actual audio devices). Cables from other
+ * submixers are excluded — those are handled by the submixer hierarchy.
  */
 function collectMergerInputSubmixerSpec(
   entities: EntityQuery,
@@ -159,7 +191,7 @@ function processMergerInputCables(
   return inputCables;
 }
 
-/** Collect aux cable specs for all submixers that have aux sends (last mixer + topo order). */
+/** Collect aux FX-loop cable specs for the last mixer and all topo-order submixers. Each submixer's aux buses are checked for connected FX devices. Only aux buses with actual cables are included. */
 function collectAuxSpecs(
   entities: EntityQuery,
   allCables: NexusEntity<"desktopAudioCable">[],
@@ -207,6 +239,11 @@ function collectAuxSpecs(
 /*  Main discovery                                                     */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Analyze the project's audio graph and produce a complete discovery result.
+ * Returns { ok: false, error } if the project has no mixer channels, no last mixer,
+ * or no cables feeding the last mixer's inputs.
+ */
 export function runDiscovery(entities: EntityQuery): DiscoveryResult {
   const mixerChannels = (entities.ofTypes("mixerChannel").get() as NexusEntity<"mixerChannel">[]).slice().sort((a, b) => a.id.localeCompare(b.id));
   if (mixerChannels.length === 0) {

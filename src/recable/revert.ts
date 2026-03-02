@@ -4,9 +4,25 @@ import { locationKey } from "./tracing";
 import { getLocationFromEntity } from "./cables";
 
 /**
- * Reverts all changes made by the last recable. Best-effort: removes all entities we created;
- * recreates removed cables only if source/target still exist.
+ * Revert phase: undo a recable by removing created entities and recreating removed cables.
+ *
+ * This is the fourth and final phase of the pipeline. When the user clicks "Undo recable",
+ * this function takes the RevertPayload (saved from the last recable) and:
+ *
+ * 1. Removes all entities created during recabling (automation events, regions, collections,
+ *    tracks, aux routes, cables, strip groupings, channels, groups, and aux strips) in
+ *    reverse dependency order.
+ *
+ * 2. Recreates all cables that were removed during recabling (channel cables, chain cables,
+ *    aux cables, submixer cables, merger input cables) by resolving their serialized locations
+ *    back to live NexusLocations.
+ *
+ * The revert is best-effort: if an entity was already removed or a cable's source/target no
+ * longer exists (e.g. the user edited the project after recabling), it is silently skipped
+ * and a warning is reported.
  */
+
+/** Reverts all changes made by the last recable. Best-effort: removes created entities; recreates removed cables only if source/target still exist. */
 export async function revertRecable(
   doc: SyncedDocument,
   payload: RevertPayload
@@ -19,6 +35,7 @@ export async function revertRecable(
         const e = entities.getEntity(id);
         if (e) tx.remove(e);
       };
+      // Remove entities in reverse dependency order: events before regions before collections before tracks, etc.
       for (const id of payload.createdAutomationEventIds ?? []) removeIfPresent(id);
       for (const id of payload.createdAutomationRegionIds) removeIfPresent(id);
       for (const id of payload.createdAutomationCollectionIds ?? []) removeIfPresent(id);
@@ -32,6 +49,7 @@ export async function revertRecable(
 
       const usedToSocketKeys = new Set<string>();
       let skippedCables = 0;
+      // Recreate a removed cable if both endpoints still exist and the target socket isn't already occupied.
       const createCableIfUnique = (cable: RemovedCable) => {
         const fromSocket = getLocationFromEntity(entities, cable.from);
         const toSocket = getLocationFromEntity(entities, cable.to);

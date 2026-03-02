@@ -1,3 +1,4 @@
+/** Tests for the discovery phase: error cases, single-centroid scenarios, multi-submixer hierarchies, and merger topologies. */
 import { describe, it, expect } from "vitest";
 import { runDiscovery } from "./discovery";
 import { mockLoc, mockCable, mockEntity, mockEntityQuery } from "./__test-utils__/mock-entities";

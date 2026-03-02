@@ -1,3 +1,4 @@
+/** Tests for the revert phase: verifies that revertRecable removes created entities and recreates removed cables. */
 import { describe, it, expect } from "vitest";
 import { revertRecable } from "./revert";
 import { mockLoc, mockEntity, mockEntityQuery } from "./__test-utils__/mock-entities";

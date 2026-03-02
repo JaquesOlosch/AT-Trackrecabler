@@ -4,11 +4,31 @@ import { runDiscovery } from "./discovery";
 import { buildPlan } from "./plan";
 import { applyPlan } from "./execute";
 
+/**
+ * Public API entry point for the recabler module.
+ *
+ * This module exposes two functions to the application:
+ * - `recableOldCentroidToMixer(doc)` — Run the full recable pipeline on a SyncedDocument.
+ *   Internally calls discovery → plan → execute in a single transaction.
+ * - `revertRecable(doc, payload)` — Undo a previous recable using the saved RevertPayload.
+ *
+ * Usage:
+ * ```ts
+ * const result = await recableOldCentroidToMixer(doc);
+ * if (result.ok) {
+ *   // Save result.revertPayload for undo
+ *   await revertRecable(doc, result.revertPayload);
+ * }
+ * ```
+ */
+
 export type { RecableResult, RevertPayload, SerializedLocation, RemovedCable } from "./types";
 
 /**
- * Finds the "last" centroid feeding a mixer channel, then recables every cable that fed
- * the centroid's channel inputs to new mixer channels.
+ * Run the complete recable pipeline: discover the old mixer topology, build a plan, and
+ * execute it in a single atomic transaction. Returns a RecableResult with the number of
+ * channels recabled and a RevertPayload for undo. The SyncedDocument must be connected
+ * and started before calling this.
  */
 export async function recableOldCentroidToMixer(doc: SyncedDocument): Promise<RecableResult> {
   return doc.modify((tx) => {

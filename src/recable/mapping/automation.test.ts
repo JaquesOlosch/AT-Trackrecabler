@@ -1,3 +1,4 @@
+/** Tests for automation copying: emptyAutoIds, mergeAutoIds, getNestedFieldLocation, copyAutomationBetweenLocations, copyAuxAutomationForChannel, copyAutomationForChannel. */
 import { describe, it, expect } from "vitest";
 import {
   emptyAutoIds,

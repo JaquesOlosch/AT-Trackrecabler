@@ -1,3 +1,4 @@
+/** Tests for the plan phase: verifies that buildPlan correctly transforms a DiscoveryResult into a RecablePlan. */
 import { describe, it, expect } from "vitest";
 import { buildPlan } from "./plan";
 import { mockLoc, mockCable, mockEntity } from "./__test-utils__/mock-entities";

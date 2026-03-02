@@ -1,6 +1,21 @@
 import type { DiscoveryResult, RecablePlan, RevertPayload } from "./types";
 import { getCentroidAuxSendGain } from "./submixer";
 
+/**
+ * Plan phase: transform a DiscoveryResult into a RecablePlan.
+ *
+ * This is the second phase of the pipeline. It takes the read-only discovery result
+ * and builds a plan that the execute phase will apply inside a transaction.
+ *
+ * The plan initializes the RevertPayload with the cables that discovery marked for
+ * removal (so undo can recreate them) and empty arrays for entities that execute will
+ * create. It also extracts the centroid's aux send gain values for automation copying.
+ *
+ * Currently the plan is a thin wrapper that reshapes the discovery data. In the future
+ * it could add validation, conflict resolution, or user-configurable options.
+ */
+
+/** Build a RecablePlan from a successful discovery result. The first parameter (entities) is currently unused but reserved for future validation. */
 export function buildPlan(_entities: unknown, discovery: Extract<DiscoveryResult, { ok: true }>): RecablePlan {
   const revertPayload: RevertPayload = {
     createdAutomationRegionIds: [],

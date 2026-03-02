@@ -1,3 +1,4 @@
+/** Tests for entity-type predicate functions (isLastMixerEntity, isSubmixer, isChannelOrMixerEntity). */
 import { describe, it, expect } from "vitest";
 import { isLastMixerEntity, isSubmixer, isChannelOrMixerEntity } from "./constants";
 

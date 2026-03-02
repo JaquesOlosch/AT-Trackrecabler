@@ -1,3 +1,4 @@
+/** Tests for the execute phase: verifies that applyPlan creates the correct mixer entities, cables, groups, aux strips, and routes from a RecablePlan. */
 import { describe, it, expect } from "vitest";
 import { applyPlan } from "./execute";
 import { mockLoc, mockEntity, mockCable, mockEntityQuery } from "./__test-utils__/mock-entities";

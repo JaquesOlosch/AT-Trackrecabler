@@ -12,8 +12,28 @@ import {
 } from "../constants";
 
 /**
- * Map centroid channel EQ (3-band) to mixer channel EQ (4-band).
- * For mid: pick low-mid (200–700 Hz) or high-mid (1600–7200 Hz); in the gap 700–1600 Hz use low-mid at 700.
+ * EQ mapping: convert a Centroid's 3-band EQ to the new mixer's 4-band EQ.
+ *
+ * The Centroid has 3 EQ bands:
+ * - Low shelf at fixed 60 Hz (gain adjustable, ±24 dB)
+ * - Mid peak with adjustable frequency 240–4200 Hz and gain ±24 dB
+ * - High shelf at fixed 12000 Hz (gain adjustable, ±24 dB)
+ *
+ * The new mixer has 4 bands:
+ * - Low shelf (frequency + gain)
+ * - Low-mid peak (200–700 Hz, gain ±18 dB)
+ * - High-mid peak (1600–7200 Hz, gain ±18 dB)
+ * - High shelf (frequency + gain)
+ *
+ * The low and high shelves transfer directly (with gain clamped to ±18 dB).
+ * The mid band is assigned to low-mid if freq ≤ 700 Hz, high-mid if freq ≥ 1600 Hz,
+ * or low-mid at 700 Hz (the gap between the two bands) if in the dead zone 700–1600 Hz.
+ * The unused mid band is left at unity (0 dB).
+ */
+
+/**
+ * Map a Centroid channel's 3-band EQ settings to the new mixer's 4-band EQ. Gains are clamped from ±24 dB
+ * to ±18 dB. The mid band is placed in whichever mixer band (low-mid or high-mid) best covers its frequency.
  */
 export function centroidEqToMixerEq(centroidChannel: NexusEntity<"centroidChannel">): MixerEqParams {
   const eqLow = (centroidChannel.fields.eqLowGainDb as { value: number }).value;
@@ -67,8 +87,8 @@ export function centroidEqToMixerEq(centroidChannel: NexusEntity<"centroidChanne
 }
 
 /**
- * For a centroid channel and the current eqMidFrequency value, determine which mixer EQ band
- * (lowMid or highMid) should be used for mid automation, and return the parameter path.
+ * Determine the mixer EQ parameter path for a Centroid's mid EQ automation. Based on the channel's current
+ * eqMidFrequency, picks either low-mid or high-mid. Returns the path array for use with getNestedFieldLocation.
  */
 export function getMixerMidEqParamPath(centroidChannel: NexusEntity<"centroidChannel">, paramName: "eqMidGainDb" | "eqMidFrequency"): string[] | null {
   const eqMidFreq = (centroidChannel.fields.eqMidFrequency as { value: number }).value;

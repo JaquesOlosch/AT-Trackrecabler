@@ -1,3 +1,4 @@
+/** Tests for EQ mapping: centroidEqToMixerEq (3-band → 4-band) and getMixerMidEqParamPath (mid band placement). */
 import { describe, it, expect } from "vitest";
 import { centroidEqToMixerEq, getMixerMidEqParamPath } from "./eq";
 

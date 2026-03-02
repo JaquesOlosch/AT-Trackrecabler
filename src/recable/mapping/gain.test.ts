@@ -1,3 +1,4 @@
+/** Tests for gain mapping: centroidPreGainToMixerPreGain (−8 dB offset + clamping). */
 import { describe, it, expect } from "vitest";
 import { centroidPreGainToMixerPreGain } from "./gain";
 

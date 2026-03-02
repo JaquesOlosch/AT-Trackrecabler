@@ -1,5 +1,10 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
 
+/**
+ * Shared types for the recabler's 4-phase pipeline: discovery → plan → execute → revert.
+ * Types flow through these phases: DiscoveryResult → RecablePlan → applyPlan → RevertPayload.
+ */
+
 /** Minimal transaction interface shared by execute, cables, and automation modules. */
 export type RecableTransaction = {
   create(type: string, props: unknown): { id: string; location?: NexusLocation; fields: Record<string, unknown> };
@@ -7,11 +12,12 @@ export type RecableTransaction = {
   entities: EntityQuery;
 };
 
+/** Result returned to the UI after recabling. On success includes the revert payload for undo. */
 export type RecableResult =
   | { ok: true; centroidChannels: number; cablesRecabled: number; revertPayload: RevertPayload; warnings: string[] }
   | { ok: false; error: string };
 
-/** Serializable location for revert (recreate cables). */
+/** A NexusLocation stripped to plain JSON (entityId + fieldIndex array). Used in RevertPayload and specs so they survive serialization. */
 export type SerializedLocation = { entityId: string; fieldIndex: number[] };
 
 /** One removed cable: from/to locations and colorIndex so we can recreate it on undo. */
@@ -21,8 +27,9 @@ export type RemovedCable = {
   colorIndex: number;
 };
 
-/** Payload returned by recable so undo can revert all changes. */
+/** Payload returned by recable so undo can revert all changes. Has two halves: IDs of entities we created (to remove on undo) and serialized cables we removed (to recreate on undo). */
 export type RevertPayload = {
+  /** --- entities to remove on undo --- */
   createdAutomationRegionIds: string[];
   createdAutomationTrackIds: string[];
   createdAutomationCollectionIds: string[];
@@ -33,6 +40,7 @@ export type RevertPayload = {
   createdMixerAuxIds: string[];
   createdMixerGroupIds: string[];
   createdMixerStripGroupingIds: string[];
+  /** --- cables to recreate on undo --- */
   removedChannelCables: RemovedCable[];
   removedChainFirst: RemovedCable | null;
   removedChainLast: RemovedCable[];
@@ -41,10 +49,10 @@ export type RevertPayload = {
   removedMergerInputCables: RemovedCable[];
 };
 
-/** Spec for aux cables to recreate (send + return lists). */
+/** Cables in an aux FX loop: 'send' cables go from the aux send to the first FX device; 'return' cables come from the last FX device back to the aux return. */
 export type AuxCableSpec = { send: RemovedCable[]; return: RemovedCable[] };
 
-/** One mixer aux strip per source: submixerId + auxKey + spec (no merging across submixers). */
+/** One aux FX strip to create in the new mixer, for a specific submixer and aux bus. auxSendGainInfo carries the gain value and its location for automation copy. */
 export type SubmixerAuxSpecEntry = {
   submixerId: string;
   auxKey: "aux1" | "aux2" | "aux";
@@ -52,7 +60,7 @@ export type SubmixerAuxSpecEntry = {
   auxSendGainInfo?: { value: number; location: NexusLocation };
 };
 
-/** Spec for device chain cables (first cable + all last cables for multi-branch). */
+/** Describes an FX-insert chain (e.g. compressor → EQ → limiter) between a mixer entity and the stagebox. firstTo is where the chain starts (first device input), lastCables are where the chain ends (last device outputs). Multi-branch chains (e.g. through a splitter) have multiple lastCables. */
 export type ChainSpec = {
   firstTo: SerializedLocation;
   colorFirst: number;
@@ -61,7 +69,7 @@ export type ChainSpec = {
   insertReturnCableIndex?: number;
 };
 
-/** Spec for master insert chain (includes master send/return locations). */
+/** The master insert chain: extends ChainSpec with the mixer master's send/return locations and the last mixer's output location (centroidOut). */
 export type MasterChainSpec = ChainSpec & {
   sendLoc: SerializedLocation;
   returnLoc: SerializedLocation;
@@ -75,7 +83,7 @@ export type MergerGroupSpec = {
   inputCables: { fromSerialized: SerializedLocation; colorIndex: number; sourceSubmixerId?: string }[];
 };
 
-/** EQ params produced by centroidEqToMixerEq (used in SubmixerChannelRef). */
+/** 4-band parametric EQ for the new mixer channel. Mapped from the Centroid's 3-band EQ (low shelf, mid peak, high shelf) — see mapping/eq.ts. */
 export type MixerEqParams = {
   lowShelfGainDb: number;
   lowShelfFrequencyHz: number;
@@ -88,7 +96,7 @@ export type MixerEqParams = {
   isActive: boolean;
 };
 
-/** Per-channel ref: input location + gain/eq/pan for creating a mixer channel. */
+/** Snapshot of one channel's settings on the old submixer. Used to initialize the corresponding new mixer channel with the same gain, pan, EQ, mute/solo, and aux send levels. */
 export type SubmixerChannelRef = {
   inputLoc: NexusLocation;
   postGain: number;
@@ -100,7 +108,7 @@ export type SubmixerChannelRef = {
   isSoloed?: boolean;
 };
 
-/** Spec for a submixer's cables and settings. */
+/** Everything needed to recreate one submixer as a mixer group: instrument cables feeding its channels, an optional FX-insert chain, per-aux-bus cable specs, and cables from aux chain devices that exit to other mixer channels. */
 export type SubmixerCreationSpec = {
   instrumentCables: { channelRef: SubmixerChannelRef; fromSerialized: SerializedLocation; colorIndex: number }[];
   chainSpec?: ChainSpec;
@@ -108,23 +116,28 @@ export type SubmixerCreationSpec = {
   auxChainEndCables: { fromSerialized: SerializedLocation; colorIndex: number }[];
 };
 
-/** Result of discovery: read-only view of what to recable. */
+/** Complete analysis of the old mixer topology. On success, contains everything needed to build a RecablePlan. On failure, contains a human-readable error message. */
 export type DiscoveryResult =
   | {
       ok: true;
-      /** Set when last mixer is a centroid (for aux/automation). Null for kobolt, minimixer, or merger. */
+      /** The last centroid in the chain, if any. Null when the last mixer is a kobolt, minimixer, or merger. */
       lastCentroid: NexusEntity<"centroid"> | null;
       centroidChannels: NexusEntity<"centroidChannel">[];
       cablesWithChannel: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef }[];
+      /** Cables that feed the last mixer directly (not through a child submixer). */
       directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef; sourceSubmixer: NexusEntity | null }[];
+      /** Cables grouped by the child submixer they originate from. */
       submixerCableMap: Map<string, { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef; sourceSubmixer: NexusEntity | null }[]>;
+      /** The FX-insert chain between the last mixer's output and the stagebox mixer channel (if any devices are in between). */
       chain: { firstCable: NexusEntity<"desktopAudioCable">; lastCables: NexusEntity<"desktopAudioCable">[] } | null;
       /** One entry per (submixer, auxKey) with cables – no merging so each centroid/minimixer gets its own aux strip. */
       auxSpecsPerSubmixer: SubmixerAuxSpecEntry[];
       lastMixerId: string | null;
       centroidAuxReturnLocs: NexusLocation[];
       lastCentroidChannelInputKeys: Set<string>;
+      /** All child submixers in topological order (innermost first, so children are processed before parents). */
       topoOrder: NexusEntity[];
+      /** For each submixer, the IDs of its direct child submixers. */
       childSubmixersMap: Map<string, string[]>;
       submixerSpecBySubmixerId: Map<string, SubmixerCreationSpec>;
       cablesToRemove: NexusEntity<"desktopAudioCable">[];
@@ -141,7 +154,7 @@ export type DiscoveryResult =
     }
   | { ok: false; error: string };
 
-/** Plan produced from discovery; execute applies this to tx. */
+/** Immutable plan built from discovery. Passed to applyPlan which creates all new mixer entities and cables in a single transaction. */
 export type RecablePlan = {
   revertPayload: RevertPayload;
   directCables: { cable: NexusEntity<"desktopAudioCable">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef }[];

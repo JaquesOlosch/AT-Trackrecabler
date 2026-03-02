@@ -8,10 +8,44 @@ import type { AutoIds } from "./mapping/automation";
 import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity } from "./cables";
 import { locationKey } from "./tracing";
 
+/**
+ * Execute phase: apply the recable plan inside a single transaction.
+ *
+ * This is the third phase of the pipeline. It takes a RecablePlan and a transaction (tx)
+ * and creates all new mixer entities (channels, groups, aux strips, aux routes, cables,
+ * strip groupings, automation tracks/regions/events). Every created entity's ID is recorded
+ * in the revert payload so the revert phase can undo everything.
+ *
+ * The execution proceeds in these stages:
+ *
+ * 1. **Remove old cables** — Delete all cables marked for removal by discovery.
+ *
+ * 2. **Direct channels** — For each cable that fed the last mixer directly, create a new
+ *    mixer channel with the original settings (gain, pan, EQ, mute/solo). Copy automation
+ *    and wire the instrument cable to the new channel's input.
+ *
+ * 3. **Merger group** — If the topology includes an audioMerger, create a group with one
+ *    channel per merger input.
+ *
+ * 4. **Master insert chain** — Wire the FX chain (compressor, EQ, etc.) between the mixer
+ *    master's insert send/return. Create a sum channel for the last mixer's output.
+ *
+ * 5. **Aux strips** — For each aux FX loop, create a mixer aux entity and wire the send/return
+ *    cables. Skip (and remove) aux strips where no cables could be wired. Create aux routes
+ *    from each channel to the aux with the original send gain. Copy aux automation.
+ *
+ * 6. **Submixer groups** — Process each submixer in topological order (innermost first).
+ *    Create a group, add channels for instrument cables, nest child groups, wire FX-insert
+ *    chains, create submixer-level aux strips and routes, and handle aux chain exit cables.
+ *
+ * 7. **Merger input cables** — Wire merger group channels to their source submixer groups.
+ */
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+/** Shared state passed to helper functions during execution. Groups the transaction, entity query, revert payload, warnings list, and socket-usage tracking sets. */
 type ExecutionContext = {
   entities: EntityQuery;
   tx: RecableTransaction;
@@ -21,6 +55,7 @@ type ExecutionContext = {
   usedToSocketKeys: Set<string>;
 };
 
+/** Get a mixer strip's location for use in strip groupings. Falls back to constructing a location from the entity ID if the SDK doesn't provide one. */
 function getStripLocation(entity: { id: string; location?: NexusLocation }): NexusLocation {
   return entity.location ?? ({ entityId: entity.id, fieldIndex: [] } as unknown as NexusLocation);
 }
@@ -30,7 +65,7 @@ function resolve(entities: EntityQuery, loc: SerializedLocation): NexusLocation 
   return getLocationFromEntity(entities, loc);
 }
 
-/** Create a cable from→to, track its id in revertPayload, and warn on failure. */
+/** Create a cable and track it in the revert payload. Handles null source gracefully (logs a warning). Delegates to createCableIfSocketsFree for socket-uniqueness. */
 function createTrackedCable(
   ctx: ExecutionContext,
   from: NexusLocation | null,
@@ -54,6 +89,7 @@ function createTrackedCable(
 /*  Main execution                                                     */
 /* ------------------------------------------------------------------ */
 
+/** Execute the recable plan: create new mixer entities and cables, record everything in the revert payload. */
 export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: string[]): void {
   const entities = tx.entities;
   const { revertPayload } = plan;
@@ -96,7 +132,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
   const nextOrderRef = { value: maxOrder + 1 };
   const usedAutomationTargetKeys = new Set<string>();
 
-  /* ---------- direct channel cables ---------- */
+  /* ---------- Stage 2: Create mixer channels for direct instrument cables ---------- */
 
   type NewChannelWithCentroid = { newChannel: NexusEntity<"mixerChannel">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef };
   const newChannelsWithCentroid: NewChannelWithCentroid[] = [];
@@ -131,7 +167,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     );
   }
 
-  /* ---------- merger group ---------- */
+  /* ---------- Stage 3: Create merger group (if audioMerger topology) ---------- */
 
   let mergerGroupForSum: NexusEntity<"mixerGroup"> | null = null;
   type MergerInputEntry = { channel: NexusEntity<"mixerChannel">; sourceSubmixerId?: string; fromSerialized: SerializedLocation; colorIndex: number };
@@ -155,7 +191,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     }
   }
 
-  /* ---------- master chain cables ---------- */
+  /* ---------- Stage 4: Wire master insert chain ---------- */
 
   if (plan.masterChainSpec) {
     const mcs = plan.masterChainSpec;
@@ -194,7 +230,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     }
   }
 
-  /* ---------- aux entities & routes for last mixer ---------- */
+  /* ---------- Stage 5: Create aux strips and routes ---------- */
 
   const mainAuxKeys = ["aux1", "aux2", "aux"] as const;
   const createdAuxBySubmixerAndKey = new Map<string, Partial<Record<"aux1" | "aux2" | "aux", NexusEntity<"mixerAux">>>>();
@@ -260,7 +296,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     }
   }
 
-  /* ---------- submixer groups ---------- */
+  /* ---------- Stage 6: Create submixer groups in topological order ---------- */
 
   const createdGroupBySubmixerId = new Map<string, NexusEntity<"mixerGroup">>();
 
@@ -405,7 +441,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     }
   }
 
-  /* ---------- merger input cables ---------- */
+  /* ---------- Stage 7: Wire merger input cables to submixer group outputs ---------- */
 
   for (const { channel, sourceSubmixerId, fromSerialized, colorIndex } of mergerInputEntries) {
     const chInputLoc = channel.fields.audioInput.location;
