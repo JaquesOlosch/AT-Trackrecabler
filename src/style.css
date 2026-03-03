@@ -55,6 +55,11 @@ body {
   color: var(--muted);
 }
 
+.topbar-actions .topbar-error {
+  color: var(--error);
+  font-size: 0.8rem;
+}
+
 .topbar-actions button {
   padding: 0.3rem 0.75rem;
   font-size: 0.8rem;
@@ -104,6 +109,97 @@ h1 {
   padding: 3rem 1rem;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+/* Project browser list */
+.project-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 1rem;
+  background: var(--bg);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.project-list-ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  transition: background-color 0.15s;
+}
+
+.project-item:hover {
+  background-color: var(--surface);
+}
+
+.project-item.selected {
+  background-color: rgba(124, 92, 255, 0.15);
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+
+.project-item-cover {
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--border);
+}
+
+.project-item:last-child {
+  border-bottom: none;
+}
+
+.project-item-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.project-item-edit {
+  flex-shrink: 0;
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.project-item-edit:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.project-list-header {
+  margin-top: 0;
+}
+
+.project-list-search {
+  margin-bottom: 0.5rem;
+}
+
+.project-list-search input {
+  font-size: 0.9rem;
+  padding: 0.5rem;
+}
+
+.project-item-empty {
+  cursor: default;
+  color: var(--muted);
 }
 
 .card {

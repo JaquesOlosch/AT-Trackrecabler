@@ -10,21 +10,33 @@ import { recableOldCentroidToMixer, revertRecable, type RevertPayload } from "./
  * Application UI: single-page web app for the Track Recabler tool.
  *
  * This module builds the entire UI imperatively using DOM APIs (no framework).
- * The app flow has four screens, shown progressively:
+ * Layout: a sticky topbar (brand + login or username/logout) and a main content area below.
  *
- * 1. **Logged out** — Shows a login button. On click, redirects to Audiotool OAuth.
- * 2. **Logged in** — Shows user info and a project URL input.
- * 3. **Project connect** — User pastes the original project URL. On "Create copy & connect",
- *    the app creates a copy of the project via the Audiotool API, opens it in a new tab, and
- *    connects to that copy's SyncedDocument.
- * 4. **Document UI** — Shows Recable / Undo / Reset buttons and a live event log.
- *    Cable create/remove events are streamed to the log in real time.
+ * Flow:
+ * 1. **Logged out** — Topbar shows Login. Main area shows a short prompt to log in.
+ * 2. **Logged in** — Topbar shows username and Logout. Main area shows intro text, project
+ *    browser (list + search), URL field, and "Create copy & connect". "How to use" is at the bottom.
+ * 3. **Document UI** — After connecting to a project copy: Recable / Undo / "Connect to different
+ *    project" and a summary log. "How to use" stays at the bottom.
  *
- * The "How to use" card is always at the bottom of the page. A modal dialog provides
- * detailed information about what the tool does and doesn't do.
+ * Modals provide "What this tool does" and project rename. All API errors are surfaced via status text.
  */
 
 const STUDIO_BASE = "https://beta.audiotool.com/studio";
+
+/** Project list item shape (from listProjects API; we use name, displayName, coverUrl, snapshotUrl). */
+type ProjectListItem = { name: string; displayName: string; coverUrl?: string; snapshotUrl?: string };
+
+/** Normalize project name to id: "projects/foo" -> "foo". */
+function projectIdFromName(name: string): string {
+  return name.startsWith("projects/") ? name.slice("projects/".length) : name;
+}
+
+/** Move the "How to use" card to the end of the main content container (so it stays at bottom). */
+function appendHowToToBottom(container: HTMLElement): void {
+  const howTo = container.querySelector(".how-to-card");
+  if (howTo) container.appendChild(howTo);
+}
 
 /** Extract the project ID from an Audiotool studio URL. Supports both query parameter format (?project=id) and path format (/studio/id). */
 function getProjectIdFromUrl(projectUrl: string): string | null {
@@ -279,15 +291,14 @@ export async function createApp(): Promise<HTMLElement> {
   return wrapper;
 }
 
-/** Populate the topbar with a Login button when not logged in. */
+/** Fill the topbar actions slot with Login (and optional error) when the user is not logged in. */
 function renderTopbarLoggedOut(
   topbarActions: HTMLElement,
   status: Extract<LoginStatus, { loggedIn: false }>
 ): void {
   if (status.error) {
     const errSpan = document.createElement("span");
-    errSpan.style.color = "var(--error)";
-    errSpan.style.fontSize = "0.8rem";
+    errSpan.className = "topbar-error";
     errSpan.textContent = status.error.message;
     topbarActions.appendChild(errSpan);
   }
@@ -298,7 +309,7 @@ function renderTopbarLoggedOut(
   topbarActions.appendChild(loginBtn);
 }
 
-/** Populate the topbar with username and Logout button when logged in. */
+/** Fill the topbar actions slot with username and Logout when the user is logged in. */
 function renderTopbarLoggedIn(
   topbarActions: HTMLElement,
   status: LoginStatus & { loggedIn: true }
@@ -307,9 +318,8 @@ function renderTopbarLoggedIn(
   userSpan.className = "topbar-user";
   userSpan.textContent = "Loading…";
   status.getUserName().then((name) => {
-    let display = typeof name === "string" ? name : "";
-    if (display.startsWith("users/")) display = display.slice("users/".length);
-    userSpan.textContent = display;
+    const raw = typeof name === "string" ? name : "";
+    userSpan.textContent = raw.startsWith("users/") ? raw.slice("users/".length) : raw;
   });
   topbarActions.appendChild(userSpan);
   const logoutBtn = document.createElement("button");
@@ -319,7 +329,7 @@ function renderTopbarLoggedIn(
   topbarActions.appendChild(logoutBtn);
 }
 
-/** Render the main content area when logged in: short intro, then project browser. */
+/** Render main content when logged in: intro text, then project browser (after client is ready). */
 function renderMainContent(
   container: HTMLElement,
   status: LoginStatus & { loggedIn: true }
@@ -340,8 +350,7 @@ function renderMainContent(
       const username = await status.getUserName();
       loadingEl.remove();
       renderProjectConnect(container, client, typeof username === "string" ? username : undefined);
-      const howTo = container.querySelector(".how-to-card");
-      if (howTo) container.appendChild(howTo);
+      appendHowToToBottom(container);
     })
     .catch((err) => {
       loadingEl.remove();
@@ -361,82 +370,6 @@ function renderProjectConnect(
   const card = document.createElement("div");
   card.className = "card";
 
-  // Add styles for project list
-  if (!document.getElementById("project-list-style")) {
-    const style = document.createElement("style");
-    style.id = "project-list-style";
-    style.textContent = `
-      .project-list {
-        max-height: 200px;
-        overflow-y: auto;
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        margin-bottom: 1rem;
-        background: var(--bg);
-        user-select: none;
-        -webkit-user-select: none;
-      }
-      .project-list-ul {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-      }
-      .project-item {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 12px;
-        cursor: pointer;
-        border-bottom: 1px solid var(--border);
-        color: var(--text);
-        transition: background-color 0.15s;
-      }
-      .project-item:hover {
-        background-color: var(--surface);
-      }
-      .project-item.selected {
-        background-color: rgba(124, 92, 255, 0.15);
-        border-left: 3px solid var(--accent);
-        padding-left: 9px;
-      }
-      .project-item-cover {
-        width: 40px;
-        height: 40px;
-        min-width: 40px;
-        border-radius: 4px;
-        object-fit: cover;
-        background: var(--border);
-      }
-      .project-item:last-child {
-        border-bottom: none;
-      }
-      .project-item-name {
-        flex: 1;
-        min-width: 0;
-      }
-      .project-item-edit {
-        flex-shrink: 0;
-        padding: 4px 8px;
-        font-size: 0.75rem;
-        background: transparent;
-        color: var(--muted);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        cursor: pointer;
-      }
-      .project-item-edit:hover {
-        color: var(--text);
-        background: var(--surface);
-      }
-      .project-date {
-        font-size: 0.8em;
-        color: var(--muted);
-        float: right;
-      }
-    `;
-    document.head.appendChild(style);
-  }
-
   let selectedProjectId: string | null = null;
   const statusEl = document.createElement("p");
   statusEl.className = "status";
@@ -449,8 +382,8 @@ function renderProjectConnect(
 
   if (username) {
     const listHeader = document.createElement("h3");
+    listHeader.className = "project-list-header";
     listHeader.textContent = "Your Projects";
-    listHeader.style.marginTop = "0";
     card.appendChild(listHeader);
 
     const listContainer = document.createElement("div");
@@ -460,17 +393,14 @@ function renderProjectConnect(
 
     let ul: HTMLUListElement;
     let loadAllBtn: HTMLButtonElement | null = null;
-    let loadedProjects: { name: string; displayName: string; coverUrl?: string; snapshotUrl?: string }[] = [];
+    let loadedProjects: ProjectListItem[] = [];
     let nextPageToken: string | undefined;
 
-    // Search input
     const searchContainer = document.createElement("div");
-    searchContainer.style.marginBottom = "0.5rem";
+    searchContainer.className = "project-list-search";
     const searchInput = document.createElement("input");
     searchInput.type = "text";
     searchInput.placeholder = "Search projects...";
-    searchInput.style.fontSize = "0.9rem";
-    searchInput.style.padding = "0.5rem";
     searchContainer.appendChild(searchInput);
     card.insertBefore(searchContainer, listContainer);
 
@@ -483,10 +413,7 @@ function renderProjectConnect(
       searchTimeout = setTimeout(applySearchAndRender, 300);
     });
 
-    const renderProjectList = (
-      projects: { name: string; displayName: string; coverUrl?: string; snapshotUrl?: string }[],
-      searchQuery: string
-    ) => {
+    const renderProjectList = (projects: ProjectListItem[], searchQuery: string) => {
       ul.innerHTML = "";
       const q = searchQuery.toLowerCase();
       const filtered = searchQuery
@@ -496,9 +423,7 @@ function renderProjectConnect(
         : projects;
       if (filtered.length === 0) {
         const empty = document.createElement("li");
-        empty.className = "project-item";
-        empty.style.cursor = "default";
-        empty.style.color = "var(--muted)";
+        empty.className = "project-item project-item-empty";
         empty.textContent = searchQuery ? "No matching projects." : "No projects.";
         ul.appendChild(empty);
         return;
@@ -529,15 +454,13 @@ function renderProjectConnect(
               loadedProjects[idx] = { ...loadedProjects[idx], displayName: newDisplayName };
               applySearchAndRender();
             }
-            if (selectedProjectId === (p.name.startsWith("projects/") ? p.name.slice("projects/".length) : p.name)) {
+            if (selectedProjectId === projectIdFromName(p.name)) {
               statusEl.textContent = `Selected: ${newDisplayName}`;
             }
           });
         });
         li.appendChild(editBtn);
-        const pId = p.name.startsWith("projects/")
-          ? p.name.slice("projects/".length)
-          : p.name;
+        const pId = projectIdFromName(p.name);
         li.onclick = () => {
           ul.querySelectorAll(".project-item.selected").forEach((el) =>
             el.classList.remove("selected")
@@ -678,9 +601,7 @@ function renderProjectConnect(
     statusEl.className = "status";
     connectBtn.disabled = true;
     try {
-      const copyOfProjectName = projectId.startsWith("projects/")
-        ? projectId
-        : `projects/${projectId}`;
+      const copyOfProjectName = projectId.startsWith("projects/") ? projectId : `projects/${projectId}`;
 
       let displayName = "Recable copy";
       const getRes = await client.api.projectService.getProject({
@@ -709,9 +630,7 @@ function renderProjectConnect(
         connectBtn.disabled = false;
         return;
       }
-      const remixId = newProject.name.startsWith("projects/")
-        ? newProject.name.slice("projects/".length)
-        : newProject.name;
+      const remixId = projectIdFromName(newProject.name);
       const remixUrl = `${STUDIO_BASE}?project=${encodeURIComponent(remixId)}`;
 
       window.open(
@@ -845,14 +764,12 @@ function renderDocumentUI(
   resetBtn.onclick = () => {
     card.remove();
     renderProjectConnect(container, client, username);
-    const howTo = container.querySelector(".how-to-card");
-    if (howTo) container.appendChild(howTo);
+    appendHowToToBottom(container);
   };
   actions.appendChild(resetBtn);
 
   card.appendChild(actions);
   card.appendChild(logEl);
   container.appendChild(card);
-  const howTo = container.querySelector(".how-to-card");
-  if (howTo) container.appendChild(howTo);
+  appendHowToToBottom(container);
 }
