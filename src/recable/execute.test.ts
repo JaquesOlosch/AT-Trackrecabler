@@ -77,6 +77,7 @@ function makeMockTx(existingEntities: NexusEntity[] = []) {
     remove(entity: { id: string }) {
       removed.push(entity.id);
     },
+    update() {},
     entities,
   };
 

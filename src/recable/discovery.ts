@@ -368,14 +368,14 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
   let mergerGroupSpec: MergerGroupSpec | null = null;
   const mergerSubmixerSpecs = new Map<string, SubmixerCreationSpec>();
 
-  if (lastMixer.entityType === "audioMerger" && chain) {
-    // Merger IS the last mixer: collect input cables, then build master chain from merger output.
+  if (lastMixer.entityType === "audioMerger") {
+    // Merger IS the last mixer: collect input cables, then optionally build master chain from merger output.
     const merger = lastMixer as NexusEntity<"audioMerger">;
     const mergerOutLoc = (merger.fields as Record<string, { location?: NexusLocation }>).audioOutput?.location;
     const cableEntities = cablesWithChannel.map((c) => c.cable);
     const inputCables = processMergerInputCables(entities, cableEntities, merger.id, mergerSubmixerSpecs, removedMergerInputCables, removedSubmixerCables, addCableToRemove);
     mergerGroupSpec = { inputCables };
-    if (mergerOutLoc) {
+    if (chain && mergerOutLoc) {
       const master = entities.ofTypes("mixerMaster").getOne() as NexusEntity<"mixerMaster"> | undefined;
       if (master) {
         const removed = recordChainCablesAsRemoved(chain, addCableToRemove);

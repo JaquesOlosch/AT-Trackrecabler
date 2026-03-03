@@ -1,4 +1,5 @@
 import type { SyncedDocument } from "@audiotool/nexus";
+import type { NexusEntity } from "@audiotool/nexus/document";
 import type { RevertPayload, RemovedCable } from "./types";
 import { locationKey } from "./tracing";
 import { getLocationFromEntity } from "./cables";
@@ -46,6 +47,19 @@ export async function revertRecable(
       for (const id of payload.createdMixerChannelIds) removeIfPresent(id);
       for (const id of payload.createdMixerGroupIds) removeIfPresent(id);
       for (const id of payload.createdMixerAuxIds) removeIfPresent(id);
+
+      // Restore original mixer master postGain/panning if they were changed
+      if (payload.masterEntityId) {
+        const master = entities.getEntity(payload.masterEntityId) as NexusEntity<"mixerMaster"> | null;
+        if (master) {
+          if (payload.originalMasterPostGain !== undefined) {
+            tx.update(master.fields.postGain, payload.originalMasterPostGain);
+          }
+          if (payload.originalMasterPanning !== undefined) {
+            tx.update(master.fields.panning, payload.originalMasterPanning);
+          }
+        }
+      }
 
       const usedToSocketKeys = new Set<string>();
       let skippedCables = 0;

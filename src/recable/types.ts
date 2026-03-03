@@ -9,6 +9,7 @@ import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/d
 export type RecableTransaction = {
   create(type: string, props: unknown): { id: string; location?: NexusLocation; fields: Record<string, unknown> };
   remove(entity: { id: string }): void;
+  update(field: { value: unknown }, value: unknown): void;
   entities: EntityQuery;
 };
 
@@ -40,6 +41,10 @@ export type RevertPayload = {
   createdMixerAuxIds: string[];
   createdMixerGroupIds: string[];
   createdMixerStripGroupingIds: string[];
+  /** --- mixer master values to restore on undo --- */
+  originalMasterPostGain?: number;
+  originalMasterPanning?: number;
+  masterEntityId?: string;
   /** --- cables to recreate on undo --- */
   removedChannelCables: RemovedCable[];
   removedChainFirst: RemovedCable | null;

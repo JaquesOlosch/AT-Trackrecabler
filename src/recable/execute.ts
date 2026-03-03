@@ -5,8 +5,8 @@ import { centroidEqToMixerEq } from "./mapping/eq";
 import { centroidPreGainToMixerPreGain } from "./mapping/gain";
 import { copyAutomationForChannel, copyAuxAutomationForChannel, copyAutomationBetweenLocations } from "./mapping/automation";
 import type { AutoIds } from "./mapping/automation";
-import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity } from "./cables";
-import { locationKey } from "./tracing";
+import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity, getCableColor } from "./cables";
+import { locationKey, serializedLocation } from "./tracing";
 import { getEntityDisplayName } from "./submixer";
 
 /**
@@ -142,8 +142,7 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
   type NewChannelWithCentroid = { newChannel: NexusEntity<"mixerChannel">; centroidChannel?: NexusEntity<"centroidChannel">; channelRef: SubmixerChannelRef };
   const newChannelsWithCentroid: NewChannelWithCentroid[] = [];
 
-  for (let i = 0; i < plan.directCables.length; i++) {
-    const { centroidChannel, channelRef } = plan.directCables[i];
+  for (const { cable, centroidChannel, channelRef } of plan.directCables) {
     const postGain = centroidChannel ? (centroidChannel.fields.postGain as { value: number }).value : channelRef.postGain;
     const panning = centroidChannel ? (centroidChannel.fields.panning as { value?: number })?.value ?? 0 : (channelRef.panning ?? 0);
     const preGain = centroidChannel ? (centroidChannel.fields.preGain as { value?: number })?.value ?? 1 : 1;
@@ -163,11 +162,12 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
       trackAutoIds(copyAutomationForChannel(entities, tx, centroidChannel, newChannel, nextOrderRef, warnings));
     }
 
+    const cableFrom = serializedLocation(cable.fields.fromSocket.value);
     createTrackedCable(
       ctx,
-      resolve(entities, revertPayload.removedChannelCables[i].from),
+      resolve(entities, cableFrom),
       newChannel.fields.audioInput.location,
-      revertPayload.removedChannelCables[i].colorIndex,
+      getCableColor(cable),
       "Channel cable skipped",
     );
   }
@@ -235,6 +235,42 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
         const newCh = tx.create("mixerChannel", {}) as NexusEntity<"mixerChannel">;
         revertPayload.createdMixerChannelIds.push(newCh.id);
         createTrackedCable(ctx, resolve(entities, lastFrom), newCh.fields.audioInput.location, colorLast, "Master insert branch cable skipped");
+      }
+    }
+  }
+
+  /* ---------- Stage 4b: Copy last mixer postGain/panning to mixerMaster ---------- */
+
+  const mixerMaster = entities.ofTypes("mixerMaster").getOne() as NexusEntity<"mixerMaster"> | undefined;
+  if (mixerMaster && plan.lastMixerId) {
+    const lastMixerEntity = entities.getEntity(plan.lastMixerId) as NexusEntity | null;
+    if (lastMixerEntity) {
+      const lmFields = lastMixerEntity.fields as Record<string, { value?: unknown; location?: NexusLocation } | undefined>;
+      const masterFields = mixerMaster.fields as Record<string, { value?: unknown; location?: NexusLocation } | undefined>;
+
+      const lmPostGain = lmFields.postGain?.value;
+      if (typeof lmPostGain === "number" && masterFields.postGain) {
+        revertPayload.masterEntityId = mixerMaster.id;
+        revertPayload.originalMasterPostGain = (masterFields.postGain.value as number) ?? 1;
+        tx.update(masterFields.postGain as { value: unknown }, lmPostGain);
+
+        const srcLoc = lmFields.postGain?.location;
+        const tgtLoc = masterFields.postGain?.location;
+        if (srcLoc && tgtLoc) {
+          trackAutoIds(copyAutomationBetweenLocations(entities, tx, srcLoc, tgtLoc, nextOrderRef));
+        }
+      }
+
+      const lmPanning = lmFields.panning?.value;
+      if (typeof lmPanning === "number" && masterFields.panning) {
+        revertPayload.originalMasterPanning = (masterFields.panning.value as number) ?? 0;
+        tx.update(masterFields.panning as { value: unknown }, lmPanning);
+
+        const srcLoc = lmFields.panning?.location;
+        const tgtLoc = masterFields.panning?.location;
+        if (srcLoc && tgtLoc) {
+          trackAutoIds(copyAutomationBetweenLocations(entities, tx, srcLoc, tgtLoc, nextOrderRef));
+        }
       }
     }
   }
