@@ -313,67 +313,95 @@ function renderProjectConnect(
     listContainer.textContent = "Loading projects…";
     card.appendChild(listContainer);
 
-    client.api.projectService
-      .listProjects({
-        filter: `project.creator_name == "${username}"`,
-        pageSize: 50,
-        orderBy: "project.update_time desc",
-      })
-      .then((res) => {
-        if (res instanceof Error) {
-          listContainer.textContent = `Error loading projects: ${res.message}`;
-          return;
-        }
-        if (!res.projects || res.projects.length === 0) {
-          listContainer.textContent = "No projects found.";
-          return;
-        }
+    let ul: HTMLUListElement;
+    let loadMoreBtn: HTMLButtonElement | null = null;
+
+    const fetchProjects = (pageToken?: string) => {
+      if (!pageToken) {
         listContainer.innerHTML = "";
-        const ul = document.createElement("ul");
+        ul = document.createElement("ul");
         ul.className = "project-list-ul";
+        listContainer.appendChild(ul);
+      } else if (loadMoreBtn) {
+        loadMoreBtn.textContent = "Loading…";
+        loadMoreBtn.disabled = true;
+      }
 
-        res.projects.forEach((p) => {
-          const li = document.createElement("li");
-          li.className = "project-item";
+      client.api.projectService
+        .listProjects({
+          filter: `project.creator_name == "${username}"`,
+          pageSize: 50,
+          orderBy: "project.update_time desc",
+          pageToken,
+        })
+        .then((res) => {
+          if (res instanceof Error) {
+            if (!pageToken) listContainer.textContent = `Error loading projects: ${res.message}`;
+            else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
+            return;
+          }
           
-          const nameSpan = document.createElement("span");
-          nameSpan.textContent = p.displayName || p.name || "Untitled";
-          li.appendChild(nameSpan);
-
-          if (p.updateTime) {
-            const dateSpan = document.createElement("span");
-            dateSpan.className = "project-date";
-            // Timestamp is { seconds, nanos } or similar in protobuf-es, need to check if it has toDate()
-            // The generated types say `Timestamp`. Let's just try to format it if possible or skip.
-            // Actually `Timestamp` usually has `toDate()`.
-            // But let's be safe and just show name for now to avoid runtime errors if methods missing.
-            // Or try standard Date if it's a string (JSON) but here it's an object.
-            // Let's skip date for simplicity or try to use it if it looks like a Date.
+          if ((!res.projects || res.projects.length === 0) && !pageToken) {
+            listContainer.textContent = "No projects found.";
+            return;
           }
 
-          // Extract ID from p.name "projects/{id}"
-          const pId = p.name.startsWith("projects/")
-            ? p.name.slice("projects/".length)
-            : p.name;
+          // Remove load more button if it exists (will be re-added at bottom if needed)
+          loadMoreBtn?.remove();
+          loadMoreBtn = null;
 
-          li.onclick = () => {
-            // Deselect others
-            ul.querySelectorAll(".project-item.selected").forEach((el) =>
-              el.classList.remove("selected")
-            );
-            li.classList.add("selected");
-            selectedProjectId = pId;
-            input.value = ""; // Clear manual input
-            statusEl.textContent = `Selected: ${p.displayName || "Untitled"}`;
-            statusEl.className = "status";
-          };
-          ul.appendChild(li);
+          res.projects.forEach((p) => {
+            const li = document.createElement("li");
+            li.className = "project-item";
+            
+            const nameSpan = document.createElement("span");
+            nameSpan.textContent = p.displayName || p.name || "Untitled";
+            li.appendChild(nameSpan);
+
+            // Extract ID from p.name "projects/{id}"
+            const pId = p.name.startsWith("projects/")
+              ? p.name.slice("projects/".length)
+              : p.name;
+
+            li.onclick = () => {
+              // Deselect others
+              ul.querySelectorAll(".project-item.selected").forEach((el) =>
+                el.classList.remove("selected")
+              );
+              li.classList.add("selected");
+              selectedProjectId = pId;
+              input.value = ""; // Clear manual input
+              statusEl.textContent = `Selected: ${p.displayName || "Untitled"}`;
+              statusEl.className = "status";
+            };
+            ul.appendChild(li);
+          });
+
+          if (res.nextPageToken) {
+            loadMoreBtn = document.createElement("button");
+            loadMoreBtn.className = "btn-secondary";
+            loadMoreBtn.style.width = "100%";
+            loadMoreBtn.style.borderRadius = "0";
+            loadMoreBtn.style.border = "none";
+            loadMoreBtn.style.borderTop = "1px solid var(--border)";
+            loadMoreBtn.textContent = "Load more projects";
+            loadMoreBtn.onclick = (e) => {
+              e.stopPropagation(); // Prevent card click issues if any
+              fetchProjects(res.nextPageToken);
+            };
+            // Append to listContainer, outside UL but inside the scrollable area
+            // Actually, putting it inside UL as a special LI or after UL is better.
+            // Let's put it after UL inside listContainer so it scrolls with content.
+            listContainer.appendChild(loadMoreBtn);
+          }
+        })
+        .catch((err) => {
+           if (!pageToken) listContainer.textContent = `Error: ${errorMessage(err)}`;
+           else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
         });
-        listContainer.appendChild(ul);
-      })
-      .catch((err) => {
-        listContainer.textContent = `Error: ${errorMessage(err)}`;
-      });
+    };
+
+    fetchProjects();
   }
 
   const label = document.createElement("label");
