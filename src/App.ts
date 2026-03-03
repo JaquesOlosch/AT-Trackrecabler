@@ -15,8 +15,8 @@ import { recableOldCentroidToMixer, revertRecable, type RevertPayload } from "./
  * 1. **Logged out** — Shows a login button. On click, redirects to Audiotool OAuth.
  * 2. **Logged in** — Shows user info and a project URL input.
  * 3. **Project connect** — User pastes the original project URL. On "Create copy & connect",
- *    the app creates a remix (copy) via the Audiotool API, opens it in a new tab, and
- *    connects to the remix's SyncedDocument.
+ *    the app creates a copy of the project via the Audiotool API, opens it in a new tab, and
+ *    connects to that copy's SyncedDocument.
  * 4. **Document UI** — Shows Recable / Undo / Reset buttons and a live event log.
  *    Cable create/remove events are streamed to the log in real time.
  *
@@ -54,29 +54,31 @@ const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
 
 const TOOL_DESCRIPTION = `
-**Recable** migrates an old-style mix (Centroid, Kobolt, Minimixer, Merger) to the new integrated mixer in one step. The app always works on a **remix** (copy) of your project; the original is never modified.
+**Recable** is a simple tool that helps you migrate your classic Audiotool projects (using Centroid, Kobolt, Minimixer, or Merger) to the new integrated mixer. It works entirely on a **copy** of your project, so your original work is always safe.
 
-**What happens** — The app finds the **last mixer** in the chain (the device whose output feeds the single mixer channel). It then recables everything into the new mixer: each input becomes a channel, submixers become groups (with correct nesting), aux effect chains get their own mixer aux strips, and the main chain goes through the master insert.
+**How it works** — The tool scans your project to find the last mixer in the signal chain. It then rebuilds your entire mix in the new integrated mixer: every input becomes a proper channel, submixers are converted into nested groups, and your aux effects are automatically routed to new aux strips. Even your master chain effects are preserved and wired into the master insert.
 
-**Channels** — Every cable that fed the last mixer’s inputs becomes a **new mixer channel**. Each channel gets fader (post gain), pan, mute, solo; for Centroid sources also pre-gain (−8 dB). EQ is mapped from the 3-band Centroid EQ to the 4-band mixer EQ. The last mixer’s sum and any insert chain (e.g. compressor) are wired into the **master insert**.
+**Channels** — Every cable feeding your old mixer is turned into a **new mixer channel**. We copy over all your settings: fader levels, panning, mute/solo states, and even map the old 3-band EQ to the new 4-band EQ. If you used a Centroid, we also preserve the pre-gain settings.
 
-**Groups and hierarchy** — The **last mixer** becomes a **top-level group** in the new mixer. Any **submixer** that fed it (Centroid, Kobolt, Minimixer) becomes a **subgroup** inside that group. If a submixer had another cabled into it (e.g. Kobolt into Centroid), that becomes a **group inside a group**. So you get one root group containing subgroups, which can contain further subgroups. If the last device is an **Audio Merger**, the app creates one merger group at the top and each merger input that came from a submixer becomes a subgroup (again with full nesting).
+**Groups & Hierarchy** — Your mix structure is preserved perfectly. The main mixer becomes a top-level group, and any submixers feeding it become subgroups. If you had complex routing (like a Kobolt feeding a Centroid), that hierarchy is kept intact with nested groups.
 
-**Aux** — For every aux that was used (Centroid aux1/aux2, Minimixer aux; Kobolt has no aux), the app creates a **new mixer aux** for that source, reconnects the effect chain to it, and routes the right channels with the original send levels. Each Centroid or Minimixer gets its own aux strip(s), so multiple submixers with aux FX all stay correct. Global aux send gain is copied to the mixer aux pre-gain where applicable.
+**Mergers** — If your project uses an **Audio Merger** as the final output (or anywhere in the main chain), we handle that too! It becomes a merger group, with all its inputs organized as direct channels or subgroups. Note that the specific "triangle blend" settings of the merger can't be transferred, so those channels will start at default levels.
 
-**Automation** — Fader, pan, pre-gain, mute, solo, EQ and aux send automation are copied to the new mixer channels and aux routes (regions and events unchanged).
+**Aux Effects** — Used aux sends on your Centroids or Minimixers? We've got you covered. The tool creates corresponding **mixer aux strips**, reconnects your effect chains, and sets up all the send levels exactly as they were. Each submixer gets its own dedicated aux strips, keeping your signal flow clean and correct.
+
+**Automation** — We don't just move the static settings; we copy your automation too. Fader moves, pan sweeps, mute automation, and EQ changes are all transferred to the new mixer channels.
 `;
 
 const TOOL_DESCRIPTION_NOT = `
-**EQ sound** — The mixer’s 4-band EQ behaves differently; you may need to tweak after recabling.
+**EQ Sound** — While we map the settings as closely as possible, the new 4-band EQ sounds different from the old 3-band EQ. You might need to fine-tune your mix after recabling.
 
-**Undo** — Undo restores the remix to the state before recabling. If you edited the remix in between, some cables might not be restored; the log will note any issues.`;
+**Perfect Undo** — The "Undo" button reverts the copy to its state before recabling. However, if you make manual edits to the project *after* recabling but *before* clicking undo, some connections might not be perfectly restored. The log will let you know if anything was missed.`;
 
 const TOOL_HOW_TO_USE = `
-1. **Log in** with Audiotool, then open your old-style project (Centroid, Kobolt, Minimixer or Merger → single mixer channel) in the studio and copy the project URL.
-2. **Connect** — Paste the **original** project URL and click **Create copy & connect**. The app creates a **copy** and connects to it. The original is never modified.
-3. **Recable** — Click **Recable**. The app recables the whole chain into the new mixer (channels, groups, aux, master insert). Changes apply only in the remix.
-4. **Undo** — Click **Undo recable** to revert the recable in the remix. Check the log for any warnings.
+1. **Open & Copy URL** — Log in to Audiotool, open your classic project in the studio, and copy the URL from your browser's address bar.
+2. **Connect** — Paste that URL here and click **Create copy & connect**. We'll create a fresh copy of your project and open it for you.
+3. **Recable** — Once connected, just click **Recable**. Watch as your entire mixer setup is instantly rebuilt in the new integrated mixer.
+4. **Undo** — Not happy with the result? Click **Undo recable** to revert the changes and try again.
 `;
 
 /** Open an accessible modal dialog showing the tool description and limitations. The modal traps focus, closes on Escape/overlay-click, and restores body scroll on close. */
@@ -143,7 +145,7 @@ export async function createApp(): Promise<HTMLElement> {
   const subtitle = document.createElement("p");
   subtitle.className = "subtitle";
   subtitle.textContent =
-    "Create a remix of an old-style project (Centroid, Kobolt, Minimixer, Merger), then recable the whole chain into the new integrated mixer. The original project is never modified.";
+    "Easily migrate your classic Audiotool projects to the new integrated mixer. We'll create a safe copy of your track and rebuild your entire mix setup automatically.";
   container.appendChild(subtitle);
 
   const infoBtn = document.createElement("button");
@@ -228,8 +230,9 @@ function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn
   container.appendChild(card);
 
   createAudiotoolClient({ authorization: status })
-    .then((client) => {
-      renderProjectConnect(container, client);
+    .then(async (client) => {
+      const username = await status.getUserName();
+      renderProjectConnect(container, client, typeof username === "string" ? username : undefined);
     })
     .catch((err) => {
       const errCard = document.createElement("div");
@@ -239,51 +242,194 @@ function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn
     });
 }
 
-/** Render the project URL input and 'Create copy & connect' button. On connect: validates URL, creates a remix copy via the API, opens it in a new tab, and transitions to the document UI. */
+/** Render the project URL input and 'Create copy & connect' button. On connect: validates URL, creates a copy of the project via the API, opens it in a new tab, and transitions to the document UI. */
 function renderProjectConnect(
   container: HTMLElement,
-  client: Awaited<ReturnType<typeof createAudiotoolClient>>
+  client: Awaited<ReturnType<typeof createAudiotoolClient>>,
+  username?: string
 ): void {
   const card = document.createElement("div");
   card.className = "card";
+
+  // Add styles for project list
+  if (!document.getElementById("project-list-style")) {
+    const style = document.createElement("style");
+    style.id = "project-list-style";
+    style.textContent = `
+      .project-list {
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid var(--border-color, #ccc);
+        border-radius: 4px;
+        margin-bottom: 1rem;
+        background: var(--bg-color, #fff);
+      }
+      .project-list-ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      .project-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        border-bottom: 1px solid #eee;
+      }
+      .project-item:hover {
+        background-color: #f5f5f5;
+      }
+      .project-item.selected {
+        background-color: #e0f0ff;
+        font-weight: bold;
+      }
+      .project-item:last-child {
+        border-bottom: none;
+      }
+      .project-date {
+        font-size: 0.8em;
+        color: #666;
+        float: right;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  let selectedProjectId: string | null = null;
+  const statusEl = document.createElement("p");
+  statusEl.className = "status";
+
+  const input = document.createElement("input"); // Defined early for closure access
+
+  if (username) {
+    const listHeader = document.createElement("h3");
+    listHeader.textContent = "Your Projects";
+    listHeader.style.marginTop = "0";
+    card.appendChild(listHeader);
+
+    const listContainer = document.createElement("div");
+    listContainer.className = "project-list";
+    listContainer.textContent = "Loading projects…";
+    card.appendChild(listContainer);
+
+    client.api.projectService
+      .listProjects({
+        filter: `project.creator_name == "${username}"`,
+        pageSize: 50,
+        orderBy: "project.update_time desc",
+      })
+      .then((res) => {
+        if (res instanceof Error) {
+          listContainer.textContent = `Error loading projects: ${res.message}`;
+          return;
+        }
+        if (!res.projects || res.projects.length === 0) {
+          listContainer.textContent = "No projects found.";
+          return;
+        }
+        listContainer.innerHTML = "";
+        const ul = document.createElement("ul");
+        ul.className = "project-list-ul";
+
+        res.projects.forEach((p) => {
+          const li = document.createElement("li");
+          li.className = "project-item";
+          
+          const nameSpan = document.createElement("span");
+          nameSpan.textContent = p.displayName || p.name || "Untitled";
+          li.appendChild(nameSpan);
+
+          if (p.updateTime) {
+            const dateSpan = document.createElement("span");
+            dateSpan.className = "project-date";
+            // Timestamp is { seconds, nanos } or similar in protobuf-es, need to check if it has toDate()
+            // The generated types say `Timestamp`. Let's just try to format it if possible or skip.
+            // Actually `Timestamp` usually has `toDate()`.
+            // But let's be safe and just show name for now to avoid runtime errors if methods missing.
+            // Or try standard Date if it's a string (JSON) but here it's an object.
+            // Let's skip date for simplicity or try to use it if it looks like a Date.
+          }
+
+          // Extract ID from p.name "projects/{id}"
+          const pId = p.name.startsWith("projects/")
+            ? p.name.slice("projects/".length)
+            : p.name;
+
+          li.onclick = () => {
+            // Deselect others
+            ul.querySelectorAll(".project-item.selected").forEach((el) =>
+              el.classList.remove("selected")
+            );
+            li.classList.add("selected");
+            selectedProjectId = pId;
+            input.value = ""; // Clear manual input
+            statusEl.textContent = `Selected: ${p.displayName || "Untitled"}`;
+            statusEl.className = "status";
+          };
+          ul.appendChild(li);
+        });
+        listContainer.appendChild(ul);
+      })
+      .catch((err) => {
+        listContainer.textContent = `Error: ${errorMessage(err)}`;
+      });
+  }
+
   const label = document.createElement("label");
-  label.textContent = "Original project URL (from beta.audiotool.com)";
+  label.textContent = username
+    ? "Or paste original project URL"
+    : "Original project URL (from beta.audiotool.com)";
   label.htmlFor = "project-url-input";
   card.appendChild(label);
-  const input = document.createElement("input");
+
   input.id = "project-url-input";
   input.type = "url";
   input.placeholder = "https://beta.audiotool.com/…";
+  input.oninput = () => {
+    if (input.value) {
+      // Clear selection if typing
+      selectedProjectId = null;
+      card
+        .querySelectorAll(".project-item.selected")
+        .forEach((el) => el.classList.remove("selected"));
+      statusEl.textContent = "";
+    }
+  };
   card.appendChild(input);
-  const statusEl = document.createElement("p");
-  statusEl.className = "status";
+
   card.appendChild(statusEl);
+
   const connectBtn = document.createElement("button");
   connectBtn.className = "btn-primary";
   connectBtn.textContent = "Create copy & connect";
   connectBtn.onclick = async () => {
-    const projectUrl = input.value.trim();
-    if (!projectUrl) {
-      statusEl.textContent = "Enter the original project URL.";
-      statusEl.className = "status error";
-      return;
-    }
-    statusEl.textContent = "Creating remix (copy of project)…";
-    statusEl.className = "status";
-    connectBtn.disabled = true;
-    try {
-      const projectId = getProjectIdFromUrl(projectUrl);
+    let projectId = selectedProjectId;
+    
+    if (!projectId) {
+      const projectUrl = input.value.trim();
+      if (!projectUrl) {
+        statusEl.textContent = "Select a project or enter a URL.";
+        statusEl.className = "status error";
+        return;
+      }
+      projectId = getProjectIdFromUrl(projectUrl);
       if (!projectId) {
         statusEl.textContent = "Could not read project id from URL.";
         statusEl.className = "status error";
-        connectBtn.disabled = false;
         return;
       }
-      const copyOfProjectName =
-        projectId.startsWith("projects/") ? projectId : `projects/${projectId}`;
+    }
+
+    statusEl.textContent = "Creating copy of project…";
+    statusEl.className = "status";
+    connectBtn.disabled = true;
+    try {
+      const copyOfProjectName = projectId.startsWith("projects/")
+        ? projectId
+        : `projects/${projectId}`;
 
       let displayName = "Recable copy";
-      const getRes = await client.api.projectService.getProject({ name: copyOfProjectName });
+      const getRes = await client.api.projectService.getProject({
+        name: copyOfProjectName,
+      });
       if (!(getRes instanceof Error) && getRes.project?.displayName?.trim()) {
         displayName = `${getRes.project.displayName.trim()} recabled`;
       }
@@ -302,18 +448,23 @@ function renderProjectConnect(
       }
       const newProject = createRes.project;
       if (!newProject?.name) {
-        statusEl.textContent = "Remix created but no project id returned.";
+        statusEl.textContent = "Copy created but no project id returned.";
         statusEl.className = "status error";
         connectBtn.disabled = false;
         return;
       }
-      const remixId =
-        newProject.name.startsWith("projects/") ? newProject.name.slice("projects/".length) : newProject.name;
+      const remixId = newProject.name.startsWith("projects/")
+        ? newProject.name.slice("projects/".length)
+        : newProject.name;
       const remixUrl = `${STUDIO_BASE}?project=${encodeURIComponent(remixId)}`;
 
-      window.open(remixUrl, "_blank", "noopener,noreferrer,width=1280,height=800,left=100,top=100");
+      window.open(
+        remixUrl,
+        "_blank",
+        "noopener,noreferrer,width=1280,height=800,left=100,top=100"
+      );
 
-      statusEl.textContent = "Connecting to remix…";
+      statusEl.textContent = "Connecting to copy…";
       const doc = await client.createSyncedDocument({ project: remixUrl });
       renderDocumentUI(container, doc, client);
       card.remove();
@@ -366,7 +517,7 @@ function renderDocumentUI(
   doc
     .start()
     .then(() => {
-      statusEl.textContent = "Connected to remix — recable below.";
+      statusEl.textContent = "Connected to copy — recable below.";
       statusEl.className = "status connected";
     })
     .catch((err) => {
