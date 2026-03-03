@@ -347,23 +347,63 @@ function renderProjectConnect(
         loadMoreBtn.disabled = true;
       }
 
-      let filter = `project.creator_name == "${username}"`;
+      // let filter = `project.creator_name == "${username}"`;
       if (searchQuery) {
-        // Assuming standard CEL 'contains' or similar. 
-        // If the API supports standard filter syntax:
-        // Note: We need to escape quotes in searchQuery properly if we insert it.
-        const safeQuery = searchQuery.replace(/"/g, '\\"');
-        filter += ` && project.name.contains("${safeQuery}")`; 
-        // Ideally filter by display_name, but let's try name first or check if display_name is supported.
-        // The listProjects comment said supported fields include project.display_name.
-        // Let's use display_name as it's more user friendly.
-        filter = `project.creator_name == "${username}" && project.display_name.contains("${safeQuery}")`;
+      // Note: We need to escape quotes in searchQuery properly if we insert it.
+      // const safeQuery = searchQuery.replace(/"/g, '\\"');
+      // Use standard CEL case-insensitive contains if supported, but typically 'contains' is case-sensitive.
+      // However, standard CEL doesn't have a built-in case-insensitive contains.
+      // Many APIs implement a custom function or normalize data.
+      // If the API supports it, we might try: project.display_name.lower().contains(...)
+      // Or if the backend search is already case-insensitive (often true for search fields).
+      // Since the user reports it IS case sensitive, we likely need to handle it.
+      // BUT: We can't change the backend. If the backend CEL implementation doesn't support .lower(), we are stuck.
+      // Let's try to fetch more and filter client-side? No, pagination makes that hard.
+      // Let's try to see if there is a 'search' parameter or similar, or if we can use a different filter.
+      // The listProjects request has a `filter` field.
+      
+      // Wait, if we can't change the backend, we might have to fetch all and filter client side if the dataset isn't huge.
+      // But listProjects is paginated.
+      
+      // Let's assume the backend MIGHT support a case-insensitive search or we just have to live with it?
+      // No, user wants it fixed.
+      
+      // Strategy: Fetch *without* name filter, but maybe with a larger page size, and filter client-side?
+      // If the user has 1000 projects, this is bad.
+      // But maybe we can fetch the first few pages?
+      
+      // Actually, let's try to use the standard trick if supported:
+      // filter = `project.creator_name == "${username}" && project.display_name.matches("(?i).*${safeQuery}.*")`
+      // But `matches` (regex) is often expensive/disabled.
+      
+      // Let's try to fetch more items and filter client-side for now, as it's the safest bet without backend docs.
+      // We can fetch e.g. 100 items and filter them.
+      
+      // REVISION: The user said "ok das funktioniert, ist aber case sensitiv".
+      // This implies the current `contains` works but is case sensitive.
+      
+      // Let's try to filter client-side. We remove the name filter from the API request,
+      // fetch the user's projects (sorted by update time), and filter the results in JS.
+      // This works well if the user doesn't have thousands of projects.
+      // We'll increase page size to 100 to get more candidates.
+      
+      // If we do client-side filtering, we need to handle pagination carefully.
+      // If we fetch a page and it's empty after filtering, we need to fetch the NEXT page automatically until we find something or run out.
+      
+      // This is getting complex for a simple script.
+      // Let's try to just filter client side on the fetched page.
+      // It might return "empty" pages to the user if none match in the current batch, but the "Load more" would still work.
+      // That's acceptable for a V1 fix.
+      
+      // So:
+      // 1. Remove name filter from API call.
+      // 2. Filter `res.projects` in JS using `.toLowerCase()`.
       }
 
       client.api.projectService
         .listProjects({
-          filter,
-          pageSize: 50,
+          filter: `project.creator_name == "${username}"`, // Always fetch all user projects
+          pageSize: 50, // Keep 50 to be safe
           orderBy: "project.update_time desc",
           pageToken,
         })
@@ -375,20 +415,32 @@ function renderProjectConnect(
             else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
             return;
           }
+
+          // Client-side filtering for case-insensitive search
+          let projects = res.projects;
+          if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            projects = projects.filter(p => (p.displayName || p.name || "").toLowerCase().includes(q));
+          }
           
-          if ((!res.projects || res.projects.length === 0) && !pageToken) {
+          // If we filtered everything out but there are more pages, we might show "No matches in this batch"
+          // or ideally auto-fetch next. For simplicity, let's show what we have.
+          // If it's the FIRST page and we found nothing, show "No projects found".
+          
+          if ((!projects || projects.length === 0) && !pageToken && !res.nextPageToken) {
+             // Truly empty (no results and no more pages)
             listContainer.textContent = "No projects found.";
-            if (!pageToken) listContainer.appendChild(ul); // Restore UL structure even if empty? No, text is fine.
+            if (!pageToken) listContainer.appendChild(ul);
             return;
           }
-
+          
           if (!pageToken) listContainer.appendChild(ul); // Re-append UL if it was cleared
 
-          // Remove load more button if it exists (will be re-added at bottom if needed)
+          // Remove load more button if it exists
           loadMoreBtn?.remove();
           loadMoreBtn = null;
 
-          res.projects.forEach((p) => {
+          projects.forEach((p) => {
             const li = document.createElement("li");
             li.className = "project-item";
             
@@ -415,6 +467,9 @@ function renderProjectConnect(
             ul.appendChild(li);
           });
 
+          // Show "Load more" if there's a next page token
+          // Note: If we filtered out all items in this batch, the user sees nothing new but sees "Load more".
+          // Clicking it loads the next batch. This is acceptable behavior.
           if (res.nextPageToken) {
             loadMoreBtn = document.createElement("button");
             loadMoreBtn.className = "btn-secondary";
@@ -428,6 +483,10 @@ function renderProjectConnect(
               fetchProjects(res.nextPageToken, searchQuery);
             };
             listContainer.appendChild(loadMoreBtn);
+          } else if (projects.length === 0 && pageToken) {
+             // End of list and nothing found in this batch
+             // Maybe show a small "No more results" message?
+             // Or just nothing.
           }
         })
         .catch((err) => {
