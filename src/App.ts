@@ -316,25 +316,60 @@ function renderProjectConnect(
     let ul: HTMLUListElement;
     let loadMoreBtn: HTMLButtonElement | null = null;
 
-    const fetchProjects = (pageToken?: string) => {
+    // Search input
+    const searchContainer = document.createElement("div");
+    searchContainer.style.marginBottom = "0.5rem";
+    const searchInput = document.createElement("input");
+    searchInput.type = "text";
+    searchInput.placeholder = "Search projects...";
+    searchInput.style.fontSize = "0.9rem";
+    searchInput.style.padding = "0.5rem";
+    searchContainer.appendChild(searchInput);
+    card.insertBefore(searchContainer, listContainer);
+
+    let searchTimeout: ReturnType<typeof setTimeout>;
+    searchInput.addEventListener("input", () => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => {
+        fetchProjects(undefined, searchInput.value.trim());
+      }, 300);
+    });
+
+    const fetchProjects = (pageToken?: string, searchQuery: string = "") => {
       if (!pageToken) {
         listContainer.innerHTML = "";
         ul = document.createElement("ul");
         ul.className = "project-list-ul";
         listContainer.appendChild(ul);
+        listContainer.textContent = "Loading..."; // Temporary loading text
       } else if (loadMoreBtn) {
         loadMoreBtn.textContent = "Loading…";
         loadMoreBtn.disabled = true;
       }
 
+      let filter = `project.creator_name == "${username}"`;
+      if (searchQuery) {
+        // Assuming standard CEL 'contains' or similar. 
+        // If the API supports standard filter syntax:
+        // Note: We need to escape quotes in searchQuery properly if we insert it.
+        const safeQuery = searchQuery.replace(/"/g, '\\"');
+        filter += ` && project.name.contains("${safeQuery}")`; 
+        // Ideally filter by display_name, but let's try name first or check if display_name is supported.
+        // The listProjects comment said supported fields include project.display_name.
+        // Let's use display_name as it's more user friendly.
+        filter = `project.creator_name == "${username}" && project.display_name.contains("${safeQuery}")`;
+      }
+
       client.api.projectService
         .listProjects({
-          filter: `project.creator_name == "${username}"`,
+          filter,
           pageSize: 50,
           orderBy: "project.update_time desc",
           pageToken,
         })
         .then((res) => {
+          if (!pageToken) listContainer.innerHTML = ""; // Clear loading text
+          
           if (res instanceof Error) {
             if (!pageToken) listContainer.textContent = `Error loading projects: ${res.message}`;
             else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
@@ -343,8 +378,11 @@ function renderProjectConnect(
           
           if ((!res.projects || res.projects.length === 0) && !pageToken) {
             listContainer.textContent = "No projects found.";
+            if (!pageToken) listContainer.appendChild(ul); // Restore UL structure even if empty? No, text is fine.
             return;
           }
+
+          if (!pageToken) listContainer.appendChild(ul); // Re-append UL if it was cleared
 
           // Remove load more button if it exists (will be re-added at bottom if needed)
           loadMoreBtn?.remove();
@@ -387,11 +425,8 @@ function renderProjectConnect(
             loadMoreBtn.textContent = "Load more projects";
             loadMoreBtn.onclick = (e) => {
               e.stopPropagation(); // Prevent card click issues if any
-              fetchProjects(res.nextPageToken);
+              fetchProjects(res.nextPageToken, searchQuery);
             };
-            // Append to listContainer, outside UL but inside the scrollable area
-            // Actually, putting it inside UL as a special LI or after UL is better.
-            // Let's put it after UL inside listContainer so it scrolls with content.
             listContainer.appendChild(loadMoreBtn);
           }
         })
