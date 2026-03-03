@@ -237,7 +237,7 @@ export async function createApp(): Promise<HTMLElement> {
   const brand = document.createElement("span");
   brand.className = "topbar-brand";
   const brandIcon = document.createElement("img");
-  brandIcon.src = "/favicon.svg";
+  brandIcon.src = `${import.meta.env.BASE_URL}favicon.svg`;
   brandIcon.alt = "";
   brandIcon.width = 20;
   brandIcon.height = 20;
@@ -431,7 +431,7 @@ function renderProjectConnect(
       filtered.forEach((p) => {
         const li = document.createElement("li");
         li.className = "project-item";
-        const imageUrl = p.coverUrl || p.snapshotUrl || "/placeholder-project.png";
+        const imageUrl = p.coverUrl || p.snapshotUrl || `${import.meta.env.BASE_URL}placeholder-project.png`;
         const img = document.createElement("img");
         img.className = "project-item-cover";
         img.src = imageUrl.includes("?") ? imageUrl : `${imageUrl}?width=80&height=80&fit=cover&format=webp`;
