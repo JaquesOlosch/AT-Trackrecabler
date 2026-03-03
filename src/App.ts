@@ -129,6 +129,93 @@ function openWhatThisToolDoesModal(): void {
   closeBtn?.focus();
 }
 
+/** Open a modal to rename a project. Calls updateProject on save and invokes onSuccess with the new displayName. */
+function openRenameProjectModal(
+  project: { name: string; displayName: string },
+  client: Awaited<ReturnType<typeof createAudiotoolClient>>,
+  onSuccess: (newDisplayName: string) => void
+): void {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "rename-modal-title");
+
+  const projectName = project.name.startsWith("projects/") ? project.name : `projects/${project.name}`;
+  const currentName = project.displayName || "Untitled";
+
+  const dialog = document.createElement("div");
+  dialog.className = "modal-dialog";
+  dialog.innerHTML = `
+    <div class="modal-header">
+      <h2 id="rename-modal-title">Rename project</h2>
+      <button type="button" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label for="rename-input" style="display:block;margin-bottom:0.5rem;color:var(--text)">Project name</label>
+      <input type="text" id="rename-input" value="${currentName.replace(/"/g, "&quot;")}" style="width:100%;padding:0.5rem;font-size:0.9rem;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text)">
+      <p class="status" id="rename-status" style="margin-top:0.5rem;margin-bottom:0"></p>
+      <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem">
+        <button type="button" class="btn-secondary" id="rename-cancel">Cancel</button>
+        <button type="button" class="btn-primary" id="rename-save">Save</button>
+      </div>
+    </div>
+  `;
+
+  const close = (): void => {
+    overlay.remove();
+    document.body.style.overflow = "";
+  };
+
+  const input = dialog.querySelector<HTMLInputElement>("#rename-input")!;
+  const statusEl = dialog.querySelector<HTMLParagraphElement>("#rename-status")!;
+  const saveBtn = dialog.querySelector<HTMLButtonElement>("#rename-save")!;
+
+  const save = async (): Promise<void> => {
+    const newName = input.value.trim();
+    if (!newName) {
+      statusEl.textContent = "Please enter a name.";
+      statusEl.className = "status error";
+      return;
+    }
+    saveBtn.disabled = true;
+    statusEl.textContent = "Saving…";
+    statusEl.className = "status";
+    const res = await client.api.projectService.updateProject({
+      project: { name: projectName, displayName: newName },
+      updateMask: { paths: ["display_name"] },
+    });
+    if (res instanceof Error) {
+      statusEl.textContent = res.message;
+      statusEl.className = "status error";
+      saveBtn.disabled = false;
+      return;
+    }
+    onSuccess(newName);
+    close();
+  };
+
+  dialog.querySelector(".modal-close")?.addEventListener("click", close);
+  dialog.querySelector("#rename-cancel")?.addEventListener("click", close);
+  saveBtn.addEventListener("click", () => void save());
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") void save();
+    if (e.key === "Escape") close();
+  });
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  document.body.style.overflow = "hidden";
+  input.focus();
+  input.select();
+}
+
 /** Build and return the root app element. Initializes OAuth, renders the appropriate screen based on login status, and appends the how-to card. */
 export async function createApp(): Promise<HTMLElement> {
   const container = document.createElement("div");
@@ -270,6 +357,9 @@ function renderProjectConnect(
         margin: 0;
       }
       .project-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         padding: 8px 12px;
         cursor: pointer;
         border-bottom: 1px solid var(--border);
@@ -280,12 +370,38 @@ function renderProjectConnect(
         background-color: var(--surface);
       }
       .project-item.selected {
-        background-color: rgba(124, 92, 255, 0.15); /* Tint with accent color */
+        background-color: rgba(124, 92, 255, 0.15);
         border-left: 3px solid var(--accent);
-        padding-left: 9px; /* Adjust for border width */
+        padding-left: 9px;
+      }
+      .project-item-cover {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        border-radius: 4px;
+        object-fit: cover;
+        background: var(--border);
       }
       .project-item:last-child {
         border-bottom: none;
+      }
+      .project-item-name {
+        flex: 1;
+        min-width: 0;
+      }
+      .project-item-edit {
+        flex-shrink: 0;
+        padding: 4px 8px;
+        font-size: 0.75rem;
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        cursor: pointer;
+      }
+      .project-item-edit:hover {
+        color: var(--text);
+        background: var(--surface);
       }
       .project-date {
         font-size: 0.8em;
@@ -315,7 +431,7 @@ function renderProjectConnect(
 
     let ul: HTMLUListElement;
     let loadAllBtn: HTMLButtonElement | null = null;
-    let loadedProjects: { name: string; displayName: string }[] = [];
+    let loadedProjects: { name: string; displayName: string; coverUrl?: string; snapshotUrl?: string }[] = [];
     let nextPageToken: string | undefined;
 
     // Search input
@@ -339,7 +455,7 @@ function renderProjectConnect(
     });
 
     const renderProjectList = (
-      projects: { name: string; displayName: string }[],
+      projects: { name: string; displayName: string; coverUrl?: string; snapshotUrl?: string }[],
       searchQuery: string
     ) => {
       ul.innerHTML = "";
@@ -361,9 +477,35 @@ function renderProjectConnect(
       filtered.forEach((p) => {
         const li = document.createElement("li");
         li.className = "project-item";
+        const imageUrl = p.coverUrl || p.snapshotUrl || "/placeholder-project.png";
+        const img = document.createElement("img");
+        img.className = "project-item-cover";
+        img.src = imageUrl.includes("?") ? imageUrl : `${imageUrl}?width=80&height=80&fit=cover&format=webp`;
+        img.alt = "";
+        img.loading = "lazy";
+        li.appendChild(img);
         const nameSpan = document.createElement("span");
+        nameSpan.className = "project-item-name";
         nameSpan.textContent = p.displayName || p.name || "Untitled";
         li.appendChild(nameSpan);
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "project-item-edit";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openRenameProjectModal(p, client, (newDisplayName) => {
+            const idx = loadedProjects.findIndex((x) => x.name === p.name);
+            if (idx >= 0) {
+              loadedProjects[idx] = { ...loadedProjects[idx], displayName: newDisplayName };
+              applySearchAndRender();
+            }
+            if (selectedProjectId === (p.name.startsWith("projects/") ? p.name.slice("projects/".length) : p.name)) {
+              statusEl.textContent = `Selected: ${newDisplayName}`;
+            }
+          });
+        });
+        li.appendChild(editBtn);
         const pId = p.name.startsWith("projects/")
           ? p.name.slice("projects/".length)
           : p.name;
