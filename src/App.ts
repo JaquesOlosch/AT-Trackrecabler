@@ -259,10 +259,10 @@ function renderProjectConnect(
       .project-list {
         max-height: 200px;
         overflow-y: auto;
-        border: 1px solid var(--border-color, #ccc);
-        border-radius: 4px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
         margin-bottom: 1rem;
-        background: var(--bg-color, #fff);
+        background: var(--bg);
       }
       .project-list-ul {
         list-style: none;
@@ -272,21 +272,24 @@ function renderProjectConnect(
       .project-item {
         padding: 8px 12px;
         cursor: pointer;
-        border-bottom: 1px solid #eee;
+        border-bottom: 1px solid var(--border);
+        color: var(--text);
+        transition: background-color 0.15s;
       }
       .project-item:hover {
-        background-color: #f5f5f5;
+        background-color: var(--surface);
       }
       .project-item.selected {
-        background-color: #e0f0ff;
-        font-weight: bold;
+        background-color: rgba(124, 92, 255, 0.15); /* Tint with accent color */
+        border-left: 3px solid var(--accent);
+        padding-left: 9px; /* Adjust for border width */
       }
       .project-item:last-child {
         border-bottom: none;
       }
       .project-date {
         font-size: 0.8em;
-        color: #666;
+        color: var(--muted);
         float: right;
       }
     `;
