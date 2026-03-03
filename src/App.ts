@@ -314,7 +314,6 @@ function renderProjectConnect(
     card.appendChild(listContainer);
 
     let ul: HTMLUListElement;
-    let loadMoreBtn: HTMLButtonElement | null = null;
     let loadAllBtn: HTMLButtonElement | null = null;
     let loadedProjects: { name: string; displayName: string }[] = [];
     let nextPageToken: string | undefined;
@@ -389,9 +388,9 @@ function renderProjectConnect(
         ul.className = "project-list-ul";
         listContainer.appendChild(ul);
         listContainer.textContent = "Loading...";
-      } else if (loadMoreBtn) {
-        loadMoreBtn.textContent = "Loading…";
-        loadMoreBtn.disabled = true;
+      } else if (loadAllBtn) {
+        loadAllBtn.textContent = "Loading…";
+        loadAllBtn.disabled = true;
       }
 
       client.api.projectService
@@ -406,7 +405,7 @@ function renderProjectConnect(
 
           if (res instanceof Error) {
             if (!pageToken) listContainer.textContent = `Error loading projects: ${res.message}`;
-            else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
+            else if (loadAllBtn) loadAllBtn.textContent = "Error loading";
             return;
           }
 
@@ -415,38 +414,23 @@ function renderProjectConnect(
 
           if (!pageToken) listContainer.appendChild(ul);
 
-          loadMoreBtn?.remove();
-          loadMoreBtn = null;
           loadAllBtn?.remove();
           loadAllBtn = null;
 
           applySearchAndRender();
 
           if (nextPageToken) {
-            const btnContainer = document.createElement("div");
-            btnContainer.style.display = "flex";
-            btnContainer.style.gap = "0.5rem";
-            btnContainer.style.borderTop = "1px solid var(--border)";
-            btnContainer.style.padding = "0.5rem";
-
-            loadMoreBtn = document.createElement("button");
-            loadMoreBtn.className = "btn-secondary";
-            loadMoreBtn.style.flex = "1";
-            loadMoreBtn.textContent = "Load more (50)";
-            loadMoreBtn.onclick = (e) => {
-              e.stopPropagation();
-              fetchProjects(nextPageToken);
-            };
-
             loadAllBtn = document.createElement("button");
             loadAllBtn.className = "btn-secondary";
-            loadAllBtn.style.flex = "1";
+            loadAllBtn.style.width = "100%";
+            loadAllBtn.style.borderRadius = "0";
+            loadAllBtn.style.border = "none";
+            loadAllBtn.style.borderTop = "1px solid var(--border)";
             loadAllBtn.textContent = "Load all";
             loadAllBtn.onclick = async (e) => {
               e.stopPropagation();
               loadAllBtn!.textContent = "Loading…";
               loadAllBtn!.disabled = true;
-              loadMoreBtn!.disabled = true;
               while (nextPageToken) {
                 const r = await client.api.projectService.listProjects({
                   filter: `project.creator_name == "${username}"`,
@@ -455,29 +439,23 @@ function renderProjectConnect(
                   pageToken: nextPageToken,
                 });
                 if (r instanceof Error) {
-                  loadAllBtn!.textContent = "Error loading more";
+                  loadAllBtn!.textContent = "Error loading";
                   loadAllBtn!.disabled = false;
-                  loadMoreBtn!.disabled = false;
                   return;
                 }
                 loadedProjects.push(...(r.projects || []));
                 nextPageToken = r.nextPageToken || undefined;
               }
               loadAllBtn?.remove();
-              loadMoreBtn?.remove();
               loadAllBtn = null;
-              loadMoreBtn = null;
               applySearchAndRender();
             };
-
-            btnContainer.appendChild(loadMoreBtn);
-            btnContainer.appendChild(loadAllBtn);
-            listContainer.appendChild(btnContainer);
+            listContainer.appendChild(loadAllBtn);
           }
         })
         .catch((err) => {
           if (!pageToken) listContainer.textContent = `Error: ${errorMessage(err)}`;
-          else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
+          else if (loadAllBtn) loadAllBtn.textContent = "Error loading";
         });
     };
 
