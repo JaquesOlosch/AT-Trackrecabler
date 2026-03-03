@@ -75,8 +75,8 @@ const TOOL_DESCRIPTION_NOT = `
 **Perfect Undo** — The "Undo" button reverts the copy to its state before recabling. However, if you make manual edits to the project *after* recabling but *before* clicking undo, some connections might not be perfectly restored. The log will let you know if anything was missed.`;
 
 const TOOL_HOW_TO_USE = `
-1. **Open & Copy URL** — Log in to Audiotool, open your classic project in the studio, and copy the URL from your browser's address bar.
-2. **Connect** — Paste that URL here and click **Create copy & connect**. We'll create a fresh copy of your project and open it for you.
+1. **Pick a project** — Use the project browser to find your classic project, or paste a project URL directly into the URL field.
+2. **Connect** — Click **Create copy & connect**. We'll create a fresh copy of your project and open it for you.
 3. **Recable** — Once connected, just click **Recable**. Watch as your entire mixer setup is instantly rebuilt in the new integrated mixer.
 4. **Undo** — Not happy with the result? Click **Undo recable** to revert the changes and try again.
 `;
@@ -216,31 +216,34 @@ function openRenameProjectModal(
   input.select();
 }
 
-/** Build and return the root app element. Initializes OAuth, renders the appropriate screen based on login status, and appends the how-to card. */
+/** Build and return the root app element. Creates a topbar for login and the main content area below. */
 export async function createApp(): Promise<HTMLElement> {
+  const wrapper = document.createElement("div");
+
+  const topbar = document.createElement("header");
+  topbar.className = "topbar";
+  const brand = document.createElement("span");
+  brand.className = "topbar-brand";
+  const brandIcon = document.createElement("img");
+  brandIcon.src = "/favicon.svg";
+  brandIcon.alt = "";
+  brandIcon.width = 20;
+  brandIcon.height = 20;
+  brand.appendChild(brandIcon);
+  brand.appendChild(document.createTextNode("Track Recabler"));
+  topbar.appendChild(brand);
+  const topbarActions = document.createElement("div");
+  topbarActions.className = "topbar-actions";
+  topbar.appendChild(topbarActions);
+  wrapper.appendChild(topbar);
+
   const container = document.createElement("div");
-  container.className = "app";
+  container.className = "app-content";
+  wrapper.appendChild(container);
 
   const howToCard = document.createElement("section");
   howToCard.className = "card tool-description how-to-card";
   howToCard.innerHTML = `<h2>How to use</h2><div class="tool-description-body">${mdToHtml(TOOL_HOW_TO_USE)}</div>`;
-
-  const title = document.createElement("h1");
-  title.textContent = "Track Recabler";
-  container.appendChild(title);
-
-  const subtitle = document.createElement("p");
-  subtitle.className = "subtitle";
-  subtitle.textContent =
-    "Easily migrate your classic Audiotool projects to the new integrated mixer. We'll create a safe copy of your track and rebuild your entire mix setup automatically.";
-  container.appendChild(subtitle);
-
-  const infoBtn = document.createElement("button");
-  infoBtn.type = "button";
-  infoBtn.className = "btn-secondary btn-info";
-  infoBtn.textContent = "What does this tool do?";
-  infoBtn.addEventListener("click", openWhatThisToolDoesModal);
-  container.appendChild(infoBtn);
 
   if (!CLIENT_ID) {
     const card = document.createElement("div");
@@ -252,7 +255,7 @@ export async function createApp(): Promise<HTMLElement> {
     `;
     container.appendChild(card);
     container.appendChild(howToCard);
-    return container;
+    return wrapper;
   }
 
   const loginStatus = await getLoginStatus({
@@ -262,66 +265,86 @@ export async function createApp(): Promise<HTMLElement> {
   });
 
   if (loginStatus.loggedIn) {
-    renderLoggedIn(container, loginStatus);
+    renderTopbarLoggedIn(topbarActions, loginStatus);
+    renderMainContent(container, loginStatus);
   } else {
-    renderLoggedOut(container, loginStatus);
+    renderTopbarLoggedOut(topbarActions, loginStatus);
+    const prompt = document.createElement("div");
+    prompt.className = "login-prompt";
+    prompt.innerHTML = `<p>Log in with your Audiotool account to browse and migrate your projects.</p>`;
+    container.appendChild(prompt);
   }
 
   container.appendChild(howToCard);
-  return container;
+  return wrapper;
 }
 
-/** Render the login screen with an error message (if any) and a login button. */
-function renderLoggedOut(
-  container: HTMLElement,
+/** Populate the topbar with a Login button when not logged in. */
+function renderTopbarLoggedOut(
+  topbarActions: HTMLElement,
   status: Extract<LoginStatus, { loggedIn: false }>
 ): void {
-  const card = document.createElement("div");
-  card.className = "card";
-  const statusEl = document.createElement("p");
-  statusEl.className = "status";
-  statusEl.textContent =
-    "Not logged in. Click Login to authorize this app with your Audiotool account.";
-  card.appendChild(statusEl);
   if (status.error) {
-    const errEl = document.createElement("p");
-    errEl.className = "status error";
-    errEl.textContent = status.error.message;
-    card.appendChild(errEl);
+    const errSpan = document.createElement("span");
+    errSpan.style.color = "var(--error)";
+    errSpan.style.fontSize = "0.8rem";
+    errSpan.textContent = status.error.message;
+    topbarActions.appendChild(errSpan);
   }
   const loginBtn = document.createElement("button");
   loginBtn.className = "btn-primary";
-  loginBtn.textContent = "Login with Audiotool";
+  loginBtn.textContent = "Login";
   loginBtn.onclick = () => status.login();
-  card.appendChild(loginBtn);
-  container.appendChild(card);
+  topbarActions.appendChild(loginBtn);
 }
 
-/** Render the logged-in screen: show username, logout button, and initialize the Audiotool API client. */
-function renderLoggedIn(container: HTMLElement, status: LoginStatus & { loggedIn: true }): void {
-  const card = document.createElement("div");
-  card.className = "card";
-  const userLine = document.createElement("p");
-  userLine.className = "status connected";
-  userLine.textContent = "Logged in. Loading…";
+/** Populate the topbar with username and Logout button when logged in. */
+function renderTopbarLoggedIn(
+  topbarActions: HTMLElement,
+  status: LoginStatus & { loggedIn: true }
+): void {
+  const userSpan = document.createElement("span");
+  userSpan.className = "topbar-user";
+  userSpan.textContent = "Loading…";
   status.getUserName().then((name) => {
-    userLine.textContent =
-      typeof name === "string" ? `Logged in as ${name}` : "Logged in";
+    let display = typeof name === "string" ? name : "";
+    if (display.startsWith("users/")) display = display.slice("users/".length);
+    userSpan.textContent = display;
   });
-  card.appendChild(userLine);
+  topbarActions.appendChild(userSpan);
   const logoutBtn = document.createElement("button");
   logoutBtn.className = "btn-secondary";
   logoutBtn.textContent = "Logout";
   logoutBtn.onclick = () => status.logout();
-  card.appendChild(logoutBtn);
-  container.appendChild(card);
+  topbarActions.appendChild(logoutBtn);
+}
+
+/** Render the main content area when logged in: short intro, then project browser. */
+function renderMainContent(
+  container: HTMLElement,
+  status: LoginStatus & { loggedIn: true }
+): void {
+  const intro = document.createElement("p");
+  intro.className = "intro-text";
+  intro.innerHTML = `Select a project to migrate to the new integrated mixer. We'll create a safe copy and rebuild your mix automatically. <a id="info-link">Learn more</a>`;
+  intro.querySelector("#info-link")?.addEventListener("click", openWhatThisToolDoesModal);
+  container.appendChild(intro);
+
+  const loadingEl = document.createElement("p");
+  loadingEl.className = "status";
+  loadingEl.textContent = "Connecting…";
+  container.appendChild(loadingEl);
 
   createAudiotoolClient({ authorization: status })
     .then(async (client) => {
       const username = await status.getUserName();
+      loadingEl.remove();
       renderProjectConnect(container, client, typeof username === "string" ? username : undefined);
+      const howTo = container.querySelector(".how-to-card");
+      if (howTo) container.appendChild(howTo);
     })
     .catch((err) => {
+      loadingEl.remove();
       const errCard = document.createElement("div");
       errCard.className = "card";
       errCard.innerHTML = `<p class="error">Failed to create Audiotool client: ${errorMessage(err)}</p>`;
@@ -350,6 +373,8 @@ function renderProjectConnect(
         border-radius: var(--radius);
         margin-bottom: 1rem;
         background: var(--bg);
+        user-select: none;
+        -webkit-user-select: none;
       }
       .project-list-ul {
         list-style: none;
@@ -416,7 +441,11 @@ function renderProjectConnect(
   const statusEl = document.createElement("p");
   statusEl.className = "status";
 
-  const input = document.createElement("input"); // Defined early for closure access
+  const input = document.createElement("input");
+
+  const connectBtn = document.createElement("button");
+  connectBtn.className = "btn-primary";
+  connectBtn.textContent = "Create copy & connect";
 
   if (username) {
     const listHeader = document.createElement("h3");
@@ -616,7 +645,6 @@ function renderProjectConnect(
   input.placeholder = "https://beta.audiotool.com/…";
   input.oninput = () => {
     if (input.value) {
-      // Clear selection if typing
       selectedProjectId = null;
       card
         .querySelectorAll(".project-item.selected")
@@ -628,9 +656,6 @@ function renderProjectConnect(
 
   card.appendChild(statusEl);
 
-  const connectBtn = document.createElement("button");
-  connectBtn.className = "btn-primary";
-  connectBtn.textContent = "Create copy & connect";
   connectBtn.onclick = async () => {
     let projectId = selectedProjectId;
     
@@ -697,7 +722,7 @@ function renderProjectConnect(
 
       statusEl.textContent = "Connecting to copy…";
       const doc = await client.createSyncedDocument({ project: remixUrl });
-      renderDocumentUI(container, doc, client);
+      renderDocumentUI(container, doc, client, username);
       card.remove();
     } catch (err) {
       statusEl.textContent = errorMessage(err);
@@ -713,7 +738,8 @@ function renderProjectConnect(
 function renderDocumentUI(
   container: HTMLElement,
   doc: SyncedDocument,
-  client: Awaited<ReturnType<typeof createAudiotoolClient>>
+  client: Awaited<ReturnType<typeof createAudiotoolClient>>,
+  username?: string
 ): void {
   const card = document.createElement("div");
   card.className = "card";
@@ -731,12 +757,6 @@ function renderDocumentUI(
     logEl.appendChild(line);
     logEl.scrollTop = logEl.scrollHeight;
   };
-
-  doc.events.onCreate("mixerChannel", () => addLog("Mixer channel created", "created"));
-  doc.events.onCreate("desktopAudioCable", () => addLog("Cable created", "created"));
-  doc.events.onRemove("*", (entity) => {
-    if (entity.entityType === "desktopAudioCable") addLog("Cable removed", "removed");
-  });
 
   doc.connected.subscribe((connected: boolean) => {
     statusEl.textContent = connected
@@ -824,7 +844,9 @@ function renderDocumentUI(
   resetBtn.textContent = "Connect to different project";
   resetBtn.onclick = () => {
     card.remove();
-    renderProjectConnect(container, client);
+    renderProjectConnect(container, client, username);
+    const howTo = container.querySelector(".how-to-card");
+    if (howTo) container.appendChild(howTo);
   };
   actions.appendChild(resetBtn);
 

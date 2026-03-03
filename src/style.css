@@ -23,10 +23,51 @@ body {
   min-height: 100vh;
 }
 
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1.25rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.topbar-actions .topbar-user {
+  color: var(--muted);
+}
+
+.topbar-actions button {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8rem;
+}
+
 #app {
-  max-width: 560px;
+  min-height: 100vh;
+}
+
+.app-content {
+  max-width: 600px;
   margin: 0 auto;
-  padding: 2rem 1rem;
+  padding: 1.5rem 1rem;
 }
 
 h1 {
@@ -35,10 +76,34 @@ h1 {
   margin: 0 0 0.5rem;
 }
 
+.intro-text {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin-bottom: 1rem;
+}
+
+.intro-text a {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.intro-text a:hover {
+  text-decoration: underline;
+}
+
 .subtitle {
   color: var(--muted);
   font-size: 0.9rem;
   margin-bottom: 1.5rem;
+}
+
+.login-prompt {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
 }
 
 .card {
