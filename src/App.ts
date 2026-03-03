@@ -315,6 +315,9 @@ function renderProjectConnect(
 
     let ul: HTMLUListElement;
     let loadMoreBtn: HTMLButtonElement | null = null;
+    let loadAllBtn: HTMLButtonElement | null = null;
+    let loadedProjects: { name: string; displayName: string }[] = [];
+    let nextPageToken: string | undefined;
 
     // Search input
     const searchContainer = document.createElement("div");
@@ -328,170 +331,153 @@ function renderProjectConnect(
     card.insertBefore(searchContainer, listContainer);
 
     let searchTimeout: ReturnType<typeof setTimeout>;
+    const applySearchAndRender = () => {
+      renderProjectList(loadedProjects, searchInput.value.trim());
+    };
     searchInput.addEventListener("input", () => {
       clearTimeout(searchTimeout);
-      searchTimeout = setTimeout(() => {
-        fetchProjects(undefined, searchInput.value.trim());
-      }, 300);
+      searchTimeout = setTimeout(applySearchAndRender, 300);
     });
 
-    const fetchProjects = (pageToken?: string, searchQuery: string = "") => {
+    const renderProjectList = (
+      projects: { name: string; displayName: string }[],
+      searchQuery: string
+    ) => {
+      ul.innerHTML = "";
+      const q = searchQuery.toLowerCase();
+      const filtered = searchQuery
+        ? projects.filter((p) =>
+            (p.displayName || p.name || "").toLowerCase().includes(q)
+          )
+        : projects;
+      if (filtered.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "project-item";
+        empty.style.cursor = "default";
+        empty.style.color = "var(--muted)";
+        empty.textContent = searchQuery ? "No matching projects." : "No projects.";
+        ul.appendChild(empty);
+        return;
+      }
+      filtered.forEach((p) => {
+        const li = document.createElement("li");
+        li.className = "project-item";
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = p.displayName || p.name || "Untitled";
+        li.appendChild(nameSpan);
+        const pId = p.name.startsWith("projects/")
+          ? p.name.slice("projects/".length)
+          : p.name;
+        li.onclick = () => {
+          ul.querySelectorAll(".project-item.selected").forEach((el) =>
+            el.classList.remove("selected")
+          );
+          li.classList.add("selected");
+          selectedProjectId = pId;
+          input.value = "";
+          statusEl.textContent = `Selected: ${p.displayName || "Untitled"}`;
+          statusEl.className = "status";
+        };
+        ul.appendChild(li);
+      });
+    };
+
+    const fetchProjects = (pageToken?: string) => {
       if (!pageToken) {
         listContainer.innerHTML = "";
         ul = document.createElement("ul");
         ul.className = "project-list-ul";
         listContainer.appendChild(ul);
-        listContainer.textContent = "Loading..."; // Temporary loading text
+        listContainer.textContent = "Loading...";
       } else if (loadMoreBtn) {
         loadMoreBtn.textContent = "Loading…";
         loadMoreBtn.disabled = true;
       }
 
-      // let filter = `project.creator_name == "${username}"`;
-      if (searchQuery) {
-      // Note: We need to escape quotes in searchQuery properly if we insert it.
-      // const safeQuery = searchQuery.replace(/"/g, '\\"');
-      // Use standard CEL case-insensitive contains if supported, but typically 'contains' is case-sensitive.
-      // However, standard CEL doesn't have a built-in case-insensitive contains.
-      // Many APIs implement a custom function or normalize data.
-      // If the API supports it, we might try: project.display_name.lower().contains(...)
-      // Or if the backend search is already case-insensitive (often true for search fields).
-      // Since the user reports it IS case sensitive, we likely need to handle it.
-      // BUT: We can't change the backend. If the backend CEL implementation doesn't support .lower(), we are stuck.
-      // Let's try to fetch more and filter client-side? No, pagination makes that hard.
-      // Let's try to see if there is a 'search' parameter or similar, or if we can use a different filter.
-      // The listProjects request has a `filter` field.
-      
-      // Wait, if we can't change the backend, we might have to fetch all and filter client side if the dataset isn't huge.
-      // But listProjects is paginated.
-      
-      // Let's assume the backend MIGHT support a case-insensitive search or we just have to live with it?
-      // No, user wants it fixed.
-      
-      // Strategy: Fetch *without* name filter, but maybe with a larger page size, and filter client-side?
-      // If the user has 1000 projects, this is bad.
-      // But maybe we can fetch the first few pages?
-      
-      // Actually, let's try to use the standard trick if supported:
-      // filter = `project.creator_name == "${username}" && project.display_name.matches("(?i).*${safeQuery}.*")`
-      // But `matches` (regex) is often expensive/disabled.
-      
-      // Let's try to fetch more items and filter client-side for now, as it's the safest bet without backend docs.
-      // We can fetch e.g. 100 items and filter them.
-      
-      // REVISION: The user said "ok das funktioniert, ist aber case sensitiv".
-      // This implies the current `contains` works but is case sensitive.
-      
-      // Let's try to filter client-side. We remove the name filter from the API request,
-      // fetch the user's projects (sorted by update time), and filter the results in JS.
-      // This works well if the user doesn't have thousands of projects.
-      // We'll increase page size to 100 to get more candidates.
-      
-      // If we do client-side filtering, we need to handle pagination carefully.
-      // If we fetch a page and it's empty after filtering, we need to fetch the NEXT page automatically until we find something or run out.
-      
-      // This is getting complex for a simple script.
-      // Let's try to just filter client side on the fetched page.
-      // It might return "empty" pages to the user if none match in the current batch, but the "Load more" would still work.
-      // That's acceptable for a V1 fix.
-      
-      // So:
-      // 1. Remove name filter from API call.
-      // 2. Filter `res.projects` in JS using `.toLowerCase()`.
-      }
-
       client.api.projectService
         .listProjects({
-          filter: `project.creator_name == "${username}"`, // Always fetch all user projects
-          pageSize: 50, // Keep 50 to be safe
+          filter: `project.creator_name == "${username}"`,
+          pageSize: 50,
           orderBy: "project.update_time desc",
           pageToken,
         })
         .then((res) => {
-          if (!pageToken) listContainer.innerHTML = ""; // Clear loading text
-          
+          if (!pageToken) listContainer.innerHTML = "";
+
           if (res instanceof Error) {
             if (!pageToken) listContainer.textContent = `Error loading projects: ${res.message}`;
             else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
             return;
           }
 
-          // Client-side filtering for case-insensitive search
-          let projects = res.projects;
-          if (searchQuery) {
-            const q = searchQuery.toLowerCase();
-            projects = projects.filter(p => (p.displayName || p.name || "").toLowerCase().includes(q));
-          }
-          
-          // If we filtered everything out but there are more pages, we might show "No matches in this batch"
-          // or ideally auto-fetch next. For simplicity, let's show what we have.
-          // If it's the FIRST page and we found nothing, show "No projects found".
-          
-          if ((!projects || projects.length === 0) && !pageToken && !res.nextPageToken) {
-             // Truly empty (no results and no more pages)
-            listContainer.textContent = "No projects found.";
-            if (!pageToken) listContainer.appendChild(ul);
-            return;
-          }
-          
-          if (!pageToken) listContainer.appendChild(ul); // Re-append UL if it was cleared
+          loadedProjects.push(...(res.projects || []));
+          nextPageToken = res.nextPageToken || undefined;
 
-          // Remove load more button if it exists
+          if (!pageToken) listContainer.appendChild(ul);
+
           loadMoreBtn?.remove();
           loadMoreBtn = null;
+          loadAllBtn?.remove();
+          loadAllBtn = null;
 
-          projects.forEach((p) => {
-            const li = document.createElement("li");
-            li.className = "project-item";
-            
-            const nameSpan = document.createElement("span");
-            nameSpan.textContent = p.displayName || p.name || "Untitled";
-            li.appendChild(nameSpan);
+          applySearchAndRender();
 
-            // Extract ID from p.name "projects/{id}"
-            const pId = p.name.startsWith("projects/")
-              ? p.name.slice("projects/".length)
-              : p.name;
+          if (nextPageToken) {
+            const btnContainer = document.createElement("div");
+            btnContainer.style.display = "flex";
+            btnContainer.style.gap = "0.5rem";
+            btnContainer.style.borderTop = "1px solid var(--border)";
+            btnContainer.style.padding = "0.5rem";
 
-            li.onclick = () => {
-              // Deselect others
-              ul.querySelectorAll(".project-item.selected").forEach((el) =>
-                el.classList.remove("selected")
-              );
-              li.classList.add("selected");
-              selectedProjectId = pId;
-              input.value = ""; // Clear manual input
-              statusEl.textContent = `Selected: ${p.displayName || "Untitled"}`;
-              statusEl.className = "status";
-            };
-            ul.appendChild(li);
-          });
-
-          // Show "Load more" if there's a next page token
-          // Note: If we filtered out all items in this batch, the user sees nothing new but sees "Load more".
-          // Clicking it loads the next batch. This is acceptable behavior.
-          if (res.nextPageToken) {
             loadMoreBtn = document.createElement("button");
             loadMoreBtn.className = "btn-secondary";
-            loadMoreBtn.style.width = "100%";
-            loadMoreBtn.style.borderRadius = "0";
-            loadMoreBtn.style.border = "none";
-            loadMoreBtn.style.borderTop = "1px solid var(--border)";
-            loadMoreBtn.textContent = "Load more projects";
+            loadMoreBtn.style.flex = "1";
+            loadMoreBtn.textContent = "Load more (50)";
             loadMoreBtn.onclick = (e) => {
-              e.stopPropagation(); // Prevent card click issues if any
-              fetchProjects(res.nextPageToken, searchQuery);
+              e.stopPropagation();
+              fetchProjects(nextPageToken);
             };
-            listContainer.appendChild(loadMoreBtn);
-          } else if (projects.length === 0 && pageToken) {
-             // End of list and nothing found in this batch
-             // Maybe show a small "No more results" message?
-             // Or just nothing.
+
+            loadAllBtn = document.createElement("button");
+            loadAllBtn.className = "btn-secondary";
+            loadAllBtn.style.flex = "1";
+            loadAllBtn.textContent = "Load all";
+            loadAllBtn.onclick = async (e) => {
+              e.stopPropagation();
+              loadAllBtn!.textContent = "Loading…";
+              loadAllBtn!.disabled = true;
+              loadMoreBtn!.disabled = true;
+              while (nextPageToken) {
+                const r = await client.api.projectService.listProjects({
+                  filter: `project.creator_name == "${username}"`,
+                  pageSize: 50,
+                  orderBy: "project.update_time desc",
+                  pageToken: nextPageToken,
+                });
+                if (r instanceof Error) {
+                  loadAllBtn!.textContent = "Error loading more";
+                  loadAllBtn!.disabled = false;
+                  loadMoreBtn!.disabled = false;
+                  return;
+                }
+                loadedProjects.push(...(r.projects || []));
+                nextPageToken = r.nextPageToken || undefined;
+              }
+              loadAllBtn?.remove();
+              loadMoreBtn?.remove();
+              loadAllBtn = null;
+              loadMoreBtn = null;
+              applySearchAndRender();
+            };
+
+            btnContainer.appendChild(loadMoreBtn);
+            btnContainer.appendChild(loadAllBtn);
+            listContainer.appendChild(btnContainer);
           }
         })
         .catch((err) => {
-           if (!pageToken) listContainer.textContent = `Error: ${errorMessage(err)}`;
-           else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
+          if (!pageToken) listContainer.textContent = `Error: ${errorMessage(err)}`;
+          else if (loadMoreBtn) loadMoreBtn.textContent = "Error loading more";
         });
     };
 
