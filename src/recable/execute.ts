@@ -124,11 +124,15 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
     tx.remove(c);
   }
 
-  const allAutomationTracks = entities.ofTypes("automationTrack").get() as NexusEntity<"automationTrack">[];
   let maxOrder = 0;
-  for (const track of allAutomationTracks) {
-    const order = (track.fields.orderAmongTracks as { value: number }).value;
-    if (order > maxOrder) maxOrder = order;
+  const trackTypes = ["automationTrack", "audioTrack", "noteTrack", "patternTrack"] as const;
+  for (const trackType of trackTypes) {
+    try {
+      for (const track of entities.ofTypes(trackType).get()) {
+        const order = (track.fields as unknown as Record<string, { value?: number }>).orderAmongTracks?.value ?? 0;
+        if (order > maxOrder) maxOrder = order;
+      }
+    } catch { /* entity type may not exist in this SDK version */ }
   }
   const nextOrderRef = { value: maxOrder + 1 };
   const usedAutomationTargetKeys = new Set<string>();
