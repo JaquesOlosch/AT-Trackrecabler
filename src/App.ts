@@ -97,6 +97,17 @@ const TOOL_HOW_TO_USE = `
 4. **Undo** — Not happy with the result? Click **Undo recable** to revert the changes and try again.
 `;
 
+const TOOL_DISCLAIMER =
+  "This tool may not work on every project—especially uncommon or heavily nested setups. We don't guarantee it will work in all cases. We always work on a copy of your project and do our best to migrate your mix safely.";
+
+/** Create the disclaimer element shown above "How to use". */
+function createDisclaimerElement(): HTMLElement {
+  const el = document.createElement("p");
+  el.className = "disclaimer";
+  el.textContent = TOOL_DISCLAIMER;
+  return el;
+}
+
 /** Open an accessible modal dialog showing the tool description and limitations. The modal traps focus, closes on Escape/overlay-click, and restores body scroll on close. */
 function openWhatThisToolDoesModal(): void {
   const overlay = document.createElement("div");
@@ -147,7 +158,7 @@ function openWhatThisToolDoesModal(): void {
 
 /** Open a modal to rename a project. Calls updateProject on save and invokes onSuccess with the new displayName. */
 function openRenameProjectModal(
-  project: { name: string; displayName: string },
+  project: ProjectListItem,
   client: Awaited<ReturnType<typeof createAudiotoolClient>>,
   onSuccess: (newDisplayName: string) => void
 ): void {
@@ -270,6 +281,7 @@ export async function createApp(): Promise<HTMLElement> {
       <pre>VITE_AUDIOTOOL_CLIENT_ID=your_client_id</pre>
     `;
     container.appendChild(card);
+    container.appendChild(createDisclaimerElement());
     container.appendChild(howToCard);
     return wrapper;
   }
@@ -291,6 +303,7 @@ export async function createApp(): Promise<HTMLElement> {
     container.appendChild(prompt);
   }
 
+  container.appendChild(createDisclaimerElement());
   container.appendChild(howToCard);
   return wrapper;
 }
@@ -433,12 +446,18 @@ function renderProjectConnect(
       filtered.forEach((p) => {
         const li = document.createElement("li");
         li.className = "project-item";
-        const imageUrl = p.coverUrl || p.snapshotUrl || `${import.meta.env.BASE_URL}placeholder-project.png`;
+        const placeholderUrl = `${import.meta.env.BASE_URL}placeholder-project.png`;
+        const imageUrl = p.coverUrl || p.snapshotUrl || placeholderUrl;
         const img = document.createElement("img");
         img.className = "project-item-cover";
         img.src = imageUrl.includes("?") ? imageUrl : `${imageUrl}?width=80&height=80&fit=cover&format=webp`;
         img.alt = "";
         img.loading = "lazy";
+        img.onerror = () => {
+          if (img.src !== placeholderUrl) {
+            img.src = placeholderUrl;
+          }
+        };
         li.appendChild(img);
         const nameSpan = document.createElement("span");
         nameSpan.className = "project-item-name";
