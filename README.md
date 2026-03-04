@@ -26,7 +26,7 @@ In old Audiotool projects, the desktop had a single output. Signals were summed 
 2. Create an application.
 3. Add **Redirect URI(s)**:
    - Local dev: `http://127.0.0.1:5173/`
-   - GitHub Pages: `https://audiotool.github.io/recabler/`
+   - GitHub Pages: `https://jaquesolosch.github.io/AT-Trackrecabler/`
 4. Add the scope needed for synced documents (e.g. project write access — check the [Login docs](https://developer.audiotool.com/js-package-documentation/documents/Login.html) for the exact scope string).
 5. Copy the **Client ID**.
 
@@ -77,7 +77,7 @@ Tests live under `src/recable/` (e.g. `mapping/eq.test.ts`, `tracing.test.ts`, `
 
 ## GitHub Pages
 
-The app is published at **https://audiotool.github.io/recabler/**.
+The app is published at **https://jaquesolosch.github.io/AT-Trackrecabler/**.
 
 To enable the build:
 
@@ -85,7 +85,7 @@ To enable the build:
 2. In **Settings → Pages**, set **Source** to **Deploy from a branch**, branch **gh-pages**, folder **/ (root)**.
 3. Push to `main` (or run the “Deploy to GitHub Pages” workflow manually). The workflow builds the app and pushes it to the `gh-pages` branch.
 
-Ensure your Audiotool app has `https://audiotool.github.io/recabler/` as a Redirect URI.
+Ensure your Audiotool app has `https://jaquesolosch.github.io/AT-Trackrecabler/` as a Redirect URI.
 
 ## Document structure: which centroid track is automated
 

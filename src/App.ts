@@ -66,7 +66,23 @@ function errorMessage(err: unknown): string {
 }
 
 const CLIENT_ID = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID ?? "";
-const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.0.0.1:5173/";
+
+const PRODUCTION_REDIRECT = "https://jaquesolosch.github.io/AT-Trackrecabler/";
+const OLD_WRONG_REDIRECT = "https://audiotool.github.io/recabler/";
+
+/** Redirect URI for OAuth. When on our GitHub Pages host always use that URL (never a baked-in env from another repo). Otherwise use env or localhost. */
+function getRedirectUrl(): string {
+  const { origin, pathname } = window.location;
+  if (origin.includes("jaquesolosch.github.io") && pathname.startsWith("/AT-Trackrecabler")) {
+    const base = pathname.endsWith("/") ? pathname : pathname + "/";
+    return origin + base;
+  }
+  const fromEnv = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL;
+  if (fromEnv && fromEnv !== OLD_WRONG_REDIRECT) return fromEnv;
+  return "http://127.0.0.1:5173/";
+}
+const REDIRECT_URL = getRedirectUrl();
+
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
 
 /** Remove OAuth callback params from the URL so a refresh or retry doesn't see stale code/state. */
