@@ -83,11 +83,8 @@ function cleanOAuthParamsFromUrl(): void {
   url.searchParams.delete("state");
   url.searchParams.delete("error");
   url.searchParams.delete("error_description");
-  window.history.replaceState(
-    {},
-    document.title,
-    url.search ? url.href : url.pathname + url.hash || url.pathname
-  );
+  const cleanHref = url.origin + url.pathname + (url.hash || "");
+  window.history.replaceState({}, document.title, cleanHref);
 }
 
 const TOOL_DESCRIPTION = `
@@ -307,21 +304,24 @@ export async function createApp(): Promise<HTMLElement> {
     return wrapper;
   }
 
+  const search = new URLSearchParams(window.location.search);
+  const hadOAuthParams = search.has("code") || search.has("state");
+
   let loginStatus = await getLoginStatus({
     clientId: CLIENT_ID,
     redirectUrl: REDIRECT_URL,
     scope: SCOPE,
   });
 
-  // If we got "Invalid state" after OAuth redirect, the stored state was lost (e.g. different tab or storage). Clean the URL so the user can retry without stale params.
-  if (
-    !loginStatus.loggedIn &&
-    loginStatus.error?.message?.includes("Invalid state") &&
-    (new URLSearchParams(window.location.search).has("code") ||
-      new URLSearchParams(window.location.search).has("state"))
-  ) {
+  // OAuth callback params in URL but login failed (e.g. Invalid state = stored state was lost). Clean URL and show friendly message so user can retry.
+  if (!loginStatus.loggedIn && hadOAuthParams) {
     cleanOAuthParamsFromUrl();
-    loginStatus = { ...loginStatus, error: new Error("Please try logging in again.") };
+    const isStateError =
+      loginStatus.error?.message?.toLowerCase().includes("invalid state") ||
+      loginStatus.error?.message?.includes("stale query");
+    if (isStateError) {
+      loginStatus = { ...loginStatus, error: new Error("Please try logging in again.") };
+    }
   }
 
   if (loginStatus.loggedIn) {
@@ -331,7 +331,8 @@ export async function createApp(): Promise<HTMLElement> {
     renderTopbarLoggedOut(topbarActions, loginStatus);
     const prompt = document.createElement("div");
     prompt.className = "login-prompt";
-    prompt.innerHTML = `<p>Log in with your Audiotool account to browse and migrate your projects.</p>`;
+    prompt.innerHTML = `<p>Log in with your Audiotool account to browse and migrate your projects.</p>
+      <p class="login-redirect-hint" title="Must match exactly the redirect URI in your Audiotool app settings">Redirect URI: <code>${REDIRECT_URL}</code></p>`;
     container.appendChild(prompt);
   }
 

@@ -119,6 +119,19 @@ h1 {
   font-size: 0.9rem;
 }
 
+.login-redirect-hint {
+  font-size: 0.75rem;
+  margin-top: 1rem;
+  word-break: break-all;
+}
+
+.login-redirect-hint code {
+  font-size: 0.7rem;
+  background: var(--surface);
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+}
+
 /* Project browser list */
 .project-list {
   max-height: 200px;
