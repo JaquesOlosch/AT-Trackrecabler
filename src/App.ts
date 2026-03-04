@@ -447,7 +447,8 @@ function renderProjectConnect(
         const editBtn = document.createElement("button");
         editBtn.type = "button";
         editBtn.className = "project-item-edit";
-        editBtn.textContent = "Edit";
+        editBtn.setAttribute("aria-label", "Rename project");
+        editBtn.textContent = "\u270F"; // pencil symbol
         editBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           openRenameProjectModal(p, client, (newDisplayName) => {

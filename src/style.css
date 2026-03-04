@@ -174,9 +174,10 @@ h1 {
   font-size: 0.75rem;
   background: transparent;
   color: var(--muted);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius);
   cursor: pointer;
+  transform: rotate(135deg);
 }
 
 .project-item-edit:hover {
