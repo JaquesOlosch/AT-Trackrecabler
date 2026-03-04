@@ -67,7 +67,6 @@ function errorMessage(err: unknown): string {
 
 const CLIENT_ID = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID ?? "";
 
-const PRODUCTION_REDIRECT = "https://jaquesolosch.github.io/AT-Trackrecabler/";
 const OLD_WRONG_REDIRECT = "https://audiotool.github.io/recabler/";
 
 /** Redirect URI for OAuth. When on our GitHub Pages host always use that URL (never a baked-in env from another repo). Otherwise use env or localhost. */
