@@ -51,9 +51,13 @@ function getProjectIdFromUrl(projectUrl: string): string | null {
   }
 }
 
-/** Minimal markdown-to-HTML: convert **bold** to <strong> and newlines to <br>. */
+/** Minimal markdown-to-HTML: convert **bold** to <strong>, {{highlight}} to <span class="highlight">, and newlines to <br>. */
 function mdToHtml(text: string): string {
-  return text.trim().replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>").replace(/\n/g, "<br>");
+  return text
+    .trim()
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\{\{(.*?)\}\}/g, '<span class="highlight">$1</span>')
+    .replace(/\n/g, "<br>");
 }
 
 /** Extract a human-readable error message from an unknown thrown value. */
@@ -88,7 +92,7 @@ const TOOL_DESCRIPTION_NOT = `
 
 const TOOL_HOW_TO_USE = `
 1. **Pick a project** — Use the project browser to find your classic project, or paste a project URL directly into the URL field.
-2. **Connect** — Click **Create copy & connect**. We'll create a fresh copy of your project and open it for you.
+2. **Connect** — Click **Create copy & connect**. We'll create a fresh copy and open it in a new window. {{If nothing opens}}, allow popups for this site (your browser may be blocking them).
 3. **Recable** — Once connected, just click **Recable**. Watch as your entire mixer setup is instantly rebuilt in the new integrated mixer.
 4. **Undo** — Not happy with the result? Click **Undo recable** to revert the changes and try again.
 `;
@@ -392,9 +396,7 @@ function renderProjectConnect(
     card.appendChild(listContainer);
 
     let ul: HTMLUListElement;
-    let loadAllBtn: HTMLButtonElement | null = null;
     let loadedProjects: ProjectListItem[] = [];
-    let nextPageToken: string | undefined;
 
     const searchContainer = document.createElement("div");
     searchContainer.className = "project-list-search";
@@ -475,85 +477,38 @@ function renderProjectConnect(
       });
     };
 
-    const fetchProjects = (pageToken?: string) => {
-      if (!pageToken) {
-        listContainer.innerHTML = "";
-        ul = document.createElement("ul");
-        ul.className = "project-list-ul";
-        listContainer.appendChild(ul);
-        listContainer.textContent = "Loading...";
-      } else if (loadAllBtn) {
-        loadAllBtn.textContent = "Loading…";
-        loadAllBtn.disabled = true;
-      }
+    const fetchAllProjects = async () => {
+      listContainer.innerHTML = "";
+      ul = document.createElement("ul");
+      ul.className = "project-list-ul";
+      listContainer.textContent = "Loading projects…";
 
-      client.api.projectService
-        .listProjects({
-          filter: `project.creator_name == "${username}"`,
-          pageSize: 50,
-          orderBy: "project.update_time desc",
-          pageToken,
-        })
-        .then((res) => {
-          if (!pageToken) listContainer.innerHTML = "";
-
+      let pageToken: string | undefined;
+      try {
+        do {
+          const res = await client.api.projectService.listProjects({
+            filter: `project.creator_name == "${username}"`,
+            pageSize: 50,
+            orderBy: "project.update_time desc",
+            pageToken,
+          });
           if (res instanceof Error) {
-            if (!pageToken) listContainer.textContent = `Error loading projects: ${res.message}`;
-            else if (loadAllBtn) loadAllBtn.textContent = "Error loading";
+            listContainer.textContent = `Error loading projects: ${res.message}`;
             return;
           }
-
           loadedProjects.push(...(res.projects || []));
-          nextPageToken = res.nextPageToken || undefined;
+          pageToken = res.nextPageToken || undefined;
+        } while (pageToken);
 
-          if (!pageToken) listContainer.appendChild(ul);
-
-          loadAllBtn?.remove();
-          loadAllBtn = null;
-
-          applySearchAndRender();
-
-          if (nextPageToken) {
-            loadAllBtn = document.createElement("button");
-            loadAllBtn.className = "btn-secondary";
-            loadAllBtn.style.width = "100%";
-            loadAllBtn.style.borderRadius = "0";
-            loadAllBtn.style.border = "none";
-            loadAllBtn.style.borderTop = "1px solid var(--border)";
-            loadAllBtn.textContent = "Load all";
-            loadAllBtn.onclick = async (e) => {
-              e.stopPropagation();
-              loadAllBtn!.textContent = "Loading…";
-              loadAllBtn!.disabled = true;
-              while (nextPageToken) {
-                const r = await client.api.projectService.listProjects({
-                  filter: `project.creator_name == "${username}"`,
-                  pageSize: 50,
-                  orderBy: "project.update_time desc",
-                  pageToken: nextPageToken,
-                });
-                if (r instanceof Error) {
-                  loadAllBtn!.textContent = "Error loading";
-                  loadAllBtn!.disabled = false;
-                  return;
-                }
-                loadedProjects.push(...(r.projects || []));
-                nextPageToken = r.nextPageToken || undefined;
-              }
-              loadAllBtn?.remove();
-              loadAllBtn = null;
-              applySearchAndRender();
-            };
-            listContainer.appendChild(loadAllBtn);
-          }
-        })
-        .catch((err) => {
-          if (!pageToken) listContainer.textContent = `Error: ${errorMessage(err)}`;
-          else if (loadAllBtn) loadAllBtn.textContent = "Error loading";
-        });
+        listContainer.innerHTML = "";
+        listContainer.appendChild(ul);
+        applySearchAndRender();
+      } catch (err) {
+        listContainer.textContent = `Error: ${errorMessage(err)}`;
+      }
     };
 
-    fetchProjects();
+    void fetchAllProjects();
   }
 
   const label = document.createElement("label");
@@ -650,6 +605,11 @@ function renderProjectConnect(
     }
   };
   card.appendChild(connectBtn);
+  const popupHint = document.createElement("p");
+  popupHint.className = "status connect-hint";
+  popupHint.textContent =
+    "The project copy will open in a new window. If it doesn't, check whether a popup blocker is blocking it and allow popups for this site.";
+  card.appendChild(popupHint);
   container.appendChild(card);
 }
 

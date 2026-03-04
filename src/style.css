@@ -236,6 +236,10 @@ h1 {
   font-weight: 500;
 }
 
+.tool-description-body .highlight {
+  color: var(--accent);
+}
+
 label {
   display: block;
   font-size: 0.85rem;
@@ -329,6 +333,10 @@ input:focus-visible {
 
 .status.error {
   color: var(--error);
+}
+
+.status.connect-hint {
+  margin-top: 0.5rem;
 }
 
 .error {
