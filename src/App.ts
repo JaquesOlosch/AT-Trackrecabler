@@ -346,8 +346,7 @@ export async function createApp(): Promise<HTMLElement> {
     renderTopbarLoggedOut(topbarActions, loginStatus);
     const prompt = document.createElement("div");
     prompt.className = "login-prompt";
-    prompt.innerHTML = `<p>Log in with your Audiotool account to browse and migrate your projects.</p>
-      <p class="login-redirect-hint" title="Must match exactly the redirect URI in your Audiotool app settings">Redirect URI: <code>${REDIRECT_URL}</code></p>`;
+    prompt.innerHTML = `<p>Log in with your Audiotool account to browse and migrate your projects.</p>`;
     container.appendChild(prompt);
   }
 
