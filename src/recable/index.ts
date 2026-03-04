@@ -38,7 +38,7 @@ export async function recableOldCentroidToMixer(doc: SyncedDocument): Promise<Re
       return { ok: false, error: discoveryResult.error };
     }
     const plan = buildPlan(entities, discoveryResult);
-    const warnings: string[] = [];
+    const warnings: string[] = [...discoveryResult.warnings];
     applyPlan(tx as RecableTransaction, plan, warnings);
     return {
       ok: true,

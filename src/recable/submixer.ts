@@ -150,11 +150,9 @@ export function getSubmixerChannelRefs(entities: EntityQuery, submixer: NexusEnt
     return refs;
   }
   if (type === "minimixer") {
+    type MiniCh = { audioInput?: { location: NexusLocation }; gain?: { value?: number; location?: NexusLocation }; panning?: { value?: number; location?: NexusLocation }; auxSendGain?: { value?: number } };
     const mm = submixer.fields as {
-      channel1?: { fields?: { audioInput?: { location: NexusLocation }; gain?: { value?: number }; panning?: { value?: number }; auxSendGain?: { value?: number } } };
-      channel2?: { fields?: { audioInput?: { location: NexusLocation }; gain?: { value?: number }; panning?: { value?: number }; auxSendGain?: { value?: number } } };
-      channel3?: { fields?: { audioInput?: { location: NexusLocation }; gain?: { value?: number }; panning?: { value?: number }; auxSendGain?: { value?: number } } };
-      channel4?: { fields?: { audioInput?: { location: NexusLocation }; gain?: { value?: number }; panning?: { value?: number }; auxSendGain?: { value?: number } } };
+      channel1?: { fields?: MiniCh }; channel2?: { fields?: MiniCh }; channel3?: { fields?: MiniCh }; channel4?: { fields?: MiniCh };
     };
     const refs: SubmixerChannelRef[] = [];
     for (const key of ["channel1", "channel2", "channel3", "channel4"] as const) {
@@ -163,13 +161,17 @@ export function getSubmixerChannelRefs(entities: EntityQuery, submixer: NexusEnt
         const gain = ch.gain?.value ?? 0;
         const auxGain = ch.auxSendGain?.value ?? 0;
         const panning = ch.panning?.value ?? 0;
-        refs.push({ inputLoc: ch.audioInput.location, postGain: gain, panning, aux1SendGain: auxGain, aux2SendGain: auxGain });
+        refs.push({
+          inputLoc: ch.audioInput.location, postGain: gain, panning, aux1SendGain: auxGain, aux2SendGain: auxGain,
+          sourceGainLoc: ch.gain?.location, sourcePanningLoc: ch.panning?.location,
+        });
       }
     }
     return refs;
   }
   if (type === "kobolt") {
-    const ko = submixer.fields as { channels?: { array?: ReadonlyArray<{ fields?: { audioInput?: { location: NexusLocation }; gain?: { value?: number }; panning?: { value?: number } } }> } };
+    type KoboltCh = { audioInput?: { location: NexusLocation }; gain?: { value?: number; location?: NexusLocation }; panning?: { value?: number; location?: NexusLocation } };
+    const ko = submixer.fields as { channels?: { array?: ReadonlyArray<{ fields?: KoboltCh }> } };
     const list = ko.channels?.array ?? [];
     const refs: SubmixerChannelRef[] = [];
     for (let i = 0; i < list.length; i++) {
@@ -177,7 +179,10 @@ export function getSubmixerChannelRefs(entities: EntityQuery, submixer: NexusEnt
       if (ch?.audioInput?.location) {
         const gain = ch.gain?.value ?? 0;
         const panning = ch.panning?.value ?? 0;
-        refs.push({ inputLoc: ch.audioInput.location, postGain: gain, panning });
+        refs.push({
+          inputLoc: ch.audioInput.location, postGain: gain, panning,
+          sourceGainLoc: ch.gain?.location, sourcePanningLoc: ch.panning?.location,
+        });
       }
     }
     return refs;

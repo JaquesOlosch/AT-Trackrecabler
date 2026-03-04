@@ -3,7 +3,7 @@ import type { RecablePlan, RecableTransaction, SerializedLocation, SubmixerChann
 import { SUBMIXER_AUX_KEYS } from "./constants";
 import { centroidEqToMixerEq } from "./mapping/eq";
 import { centroidPreGainToMixerPreGain } from "./mapping/gain";
-import { copyAutomationForChannel, copyAuxAutomationForChannel, copyAutomationBetweenLocations } from "./mapping/automation";
+import { copyAutomationForChannel, copyAuxAutomationForChannel, copyAutomationBetweenLocations, copyAutomationForSubmixerChannel } from "./mapping/automation";
 import type { AutoIds } from "./mapping/automation";
 import { createCableIfSocketsFree, wireAuxCables, getLocationFromEntity, getCableColor } from "./cables";
 import { locationKey, serializedLocation } from "./tracing";
@@ -160,6 +160,8 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
 
     if (centroidChannel) {
       trackAutoIds(copyAutomationForChannel(entities, tx, centroidChannel, newChannel, nextOrderRef, warnings));
+    } else if (channelRef.sourceGainLoc || channelRef.sourcePanningLoc) {
+      trackAutoIds(copyAutomationForSubmixerChannel(entities, tx, channelRef, newChannel, nextOrderRef));
     }
 
     const cableFrom = serializedLocation(cable.fields.fromSocket.value);
@@ -420,6 +422,9 @@ export function applyPlan(tx: RecableTransaction, plan: RecablePlan, warnings: s
       addToGroup(newCh, groupStripLoc, "Submixer channel strip grouping skipped: strip already in a group");
       newGroupChannels.push({ newChannel: newCh, channelRef });
       createTrackedCable(ctx, resolve(entities, fromSerialized), newCh.fields.audioInput.location, colorIndex, "Submixer channel cable skipped");
+      if (channelRef.sourceGainLoc || channelRef.sourcePanningLoc) {
+        trackAutoIds(copyAutomationForSubmixerChannel(entities, tx, channelRef, newCh, nextOrderRef));
+      }
     }
 
     for (const childId of plan.childSubmixersMap.get(submixerId) ?? []) {

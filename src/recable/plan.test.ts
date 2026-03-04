@@ -7,6 +7,7 @@ import type { DiscoveryResult } from "./types";
 function makeDiscovery(overrides: Partial<Extract<DiscoveryResult, { ok: true }>> = {}): Extract<DiscoveryResult, { ok: true }> {
   return {
     ok: true,
+    warnings: [],
     lastCentroid: null,
     centroidChannels: [],
     cablesWithChannel: [],

@@ -101,7 +101,7 @@ export type MixerEqParams = {
   isActive: boolean;
 };
 
-/** Snapshot of one channel's settings on the old submixer. Used to initialize the corresponding new mixer channel with the same gain, pan, EQ, mute/solo, and aux send levels. */
+/** Snapshot of one channel's settings on the old submixer. Used to initialize the corresponding new mixer channel with the same gain, pan, EQ, mute/solo, and aux send levels. For inline channels (Minimixer/Kobolt), source field locations are included for automation copying. */
 export type SubmixerChannelRef = {
   inputLoc: NexusLocation;
   postGain: number;
@@ -111,6 +111,10 @@ export type SubmixerChannelRef = {
   aux2SendGain?: number;
   isMuted?: boolean;
   isSoloed?: boolean;
+  /** Field location of the gain parameter on the source entity (Minimixer/Kobolt inline channels). */
+  sourceGainLoc?: NexusLocation;
+  /** Field location of the panning parameter on the source entity (Minimixer/Kobolt inline channels). */
+  sourcePanningLoc?: NexusLocation;
 };
 
 /** Everything needed to recreate one submixer as a mixer group: instrument cables feeding its channels, an optional FX-insert chain, per-aux-bus cable specs, and cables from aux chain devices that exit to other mixer channels. */
@@ -125,6 +129,7 @@ export type SubmixerCreationSpec = {
 export type DiscoveryResult =
   | {
       ok: true;
+      warnings: string[];
       /** The last centroid in the chain, if any. Null when the last mixer is a kobolt, minimixer, or merger. */
       lastCentroid: NexusEntity<"centroid"> | null;
       centroidChannels: NexusEntity<"centroidChannel">[];

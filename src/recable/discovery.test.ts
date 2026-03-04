@@ -334,6 +334,93 @@ describe("runDiscovery", () => {
     });
   });
 
+  describe("multiple mixer trees", () => {
+    it("warns when additional mixers feed other stagebox channels", () => {
+      const centroidA = mockEntity("cA", "centroid", {
+        audioOutput: { location: mockLoc("cA", [1]) },
+      });
+      const ccA = mockEntity("ccA", "centroidChannel", {
+        centroid: { value: { entityId: "cA" } },
+        audioInput: { location: mockLoc("ccA", [0]) },
+        postGain: { value: 0.5 },
+        panning: { value: 0 },
+        aux1SendGain: { value: 0 },
+        aux2SendGain: { value: 0 },
+        eqLowGainDb: { value: 0 },
+        eqMidGainDb: { value: 0 },
+        eqMidFrequency: { value: 500 },
+        eqHighGainDb: { value: 0 },
+      });
+      const centroidB = mockEntity("cB", "kobolt", {
+        audioOutput: { location: mockLoc("cB", [1]) },
+        channels: {
+          array: [
+            { fields: { audioInput: { location: mockLoc("cB-ch0", [0]) }, gain: { value: 0.5 }, panning: { value: 0 } } },
+          ],
+        },
+      });
+
+      const mc1 = mockEntity("mc-1", "mixerChannel", {
+        audioInput: { location: mockLoc("mc-1", [0]) },
+      });
+      const mc2 = mockEntity("mc-2", "mixerChannel", {
+        audioInput: { location: mockLoc("mc-2", [0]) },
+      });
+
+      const synth1 = mockEntity("synth-1", "synth", {});
+      const synth2 = mockEntity("synth-2", "synth", {});
+
+      const cableAToMc = mockCable("c-a", "cA", [1], "mc-1", [0]);
+      const cableBToMc = mockCable("c-b", "cB", [1], "mc-2", [0]);
+      const cableInstA = mockCable("c-i-a", "synth-1", [0], "ccA", [0]);
+      const cableInstB = mockCable("c-i-b", "synth-2", [0], "cB-ch0", [0]);
+
+      const entities = mockEntityQuery([
+        centroidA, ccA, centroidB, mc1, mc2, synth1, synth2,
+        cableAToMc, cableBToMc, cableInstA, cableInstB,
+      ]);
+
+      const result = runDiscovery(entities);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      expect(result.warnings.length).toBeGreaterThanOrEqual(1);
+      expect(result.warnings[0]).toContain("additional mixer");
+    });
+
+    it("returns no warnings when only one mixer tree exists", () => {
+      const centroid = mockEntity("c1", "centroid", {
+        audioOutput: { location: mockLoc("c1", [1]) },
+      });
+      const cc1 = mockEntity("cc1", "centroidChannel", {
+        centroid: { value: { entityId: "c1" } },
+        audioInput: { location: mockLoc("cc1", [0]) },
+        postGain: { value: 0.5 },
+        panning: { value: 0 },
+        aux1SendGain: { value: 0 },
+        aux2SendGain: { value: 0 },
+        eqLowGainDb: { value: 0 },
+        eqMidGainDb: { value: 0 },
+        eqMidFrequency: { value: 500 },
+        eqHighGainDb: { value: 0 },
+      });
+      const mc = mockEntity("mc-1", "mixerChannel", {
+        audioInput: { location: mockLoc("mc-1", [0]) },
+      });
+      const synth = mockEntity("synth-1", "synth", {});
+
+      const cableToMc = mockCable("c-back", "c1", [1], "mc-1", [0]);
+      const cableInst = mockCable("c-inst", "synth-1", [0], "cc1", [0]);
+
+      const entities = mockEntityQuery([centroid, cc1, mc, synth, cableToMc, cableInst]);
+
+      const result = runDiscovery(entities);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.warnings).toEqual([]);
+    });
+  });
+
   describe("centroid without FX chain (direct only)", () => {
     it("discovers centroid with direct cables and no chain", () => {
       const centroid = mockEntity("c1", "centroid", {

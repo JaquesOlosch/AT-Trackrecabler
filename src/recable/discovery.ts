@@ -268,6 +268,23 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
     };
   }
 
+  const discoveryWarnings: string[] = [];
+  const otherMixerIds = new Set<string>();
+  for (const mc of mixerChannels) {
+    const inputLoc = mc.fields.audioInput.location;
+    const mixer = traceBackToLastMixer(entities, inputLoc, new Set());
+    if (mixer && mixer.id !== lastMixer.id) otherMixerIds.add(mixer.id);
+  }
+  if (otherMixerIds.size > 0) {
+    const names = [...otherMixerIds].map((id) => {
+      const e = entities.getEntity(id) as NexusEntity | null;
+      return e ? `${e.entityType} (${id})` : id;
+    });
+    discoveryWarnings.push(
+      `Found ${otherMixerIds.size} additional mixer(s) feeding the stagebox that won't be recabled in this run: ${names.join(", ")}. Run the tool again to process them.`
+    );
+  }
+
   const lastCentroid: NexusEntity<"centroid"> | null = lastMixer.entityType === "centroid" ? (lastMixer as NexusEntity<"centroid">) : null;
   const chain = traceForwardChainFromLastMixer(entities, lastMixer, mixerChannelIds);
 
@@ -578,6 +595,7 @@ export function runDiscovery(entities: EntityQuery): DiscoveryResult {
 
   return {
     ok: true,
+    warnings: discoveryWarnings,
     lastCentroid,
     centroidChannels,
     cablesWithChannel,

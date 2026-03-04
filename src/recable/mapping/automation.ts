@@ -1,5 +1,5 @@
 import type { EntityQuery, NexusEntity, NexusLocation } from "@audiotool/nexus/document";
-import type { RecableTransaction } from "../types";
+import type { RecableTransaction, SubmixerChannelRef } from "../types";
 import { locationMatches, locationKey } from "../tracing";
 import { CENTROID_TO_MIXER_PARAM_MAP } from "../constants";
 import { getMixerMidEqParamPath } from "./eq";
@@ -333,5 +333,31 @@ export function copyAutomationForChannel(
     cloneRegionsAndEvents(entities, tx, allOldTracks, newTrackLoc, result);
   }
 
+  return result;
+}
+
+/**
+ * Copy gain and panning automation from an inline submixer channel (Minimixer/Kobolt) to a new mixer channel.
+ * Uses the source field locations stored in SubmixerChannelRef to find existing automation tracks and
+ * copies them to the corresponding new mixer parameters via copyAutomationBetweenLocations.
+ */
+export function copyAutomationForSubmixerChannel(
+  entities: EntityQuery,
+  tx: Pick<RecableTransaction, "create">,
+  channelRef: SubmixerChannelRef,
+  newMixerChannel: NexusEntity<"mixerChannel">,
+  nextOrderRef: { value: number },
+): AutoIds {
+  const result = emptyAutoIds();
+  const paramMappings: [NexusLocation | undefined, string[]][] = [
+    [channelRef.sourceGainLoc, ["faderParameters", "postGain"]],
+    [channelRef.sourcePanningLoc, ["faderParameters", "panning"]],
+  ];
+  for (const [sourceLoc, targetPath] of paramMappings) {
+    if (!sourceLoc) continue;
+    const targetLoc = getNestedFieldLocation(newMixerChannel, targetPath);
+    if (!targetLoc) continue;
+    mergeAutoIds(result, copyAutomationBetweenLocations(entities, tx, sourceLoc, targetLoc, nextOrderRef));
+  }
   return result;
 }
