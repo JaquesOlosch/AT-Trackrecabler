@@ -69,6 +69,27 @@ const CLIENT_ID = import.meta.env.VITE_AUDIOTOOL_CLIENT_ID ?? "";
 const REDIRECT_URL = import.meta.env.VITE_AUDIOTOOL_REDIRECT_URL ?? "http://127.0.0.1:5173/";
 const SCOPE = import.meta.env.VITE_AUDIOTOOL_SCOPE ?? "project:write";
 
+/** Remove OAuth callback params from the URL so a refresh or retry doesn't see stale code/state. */
+function cleanOAuthParamsFromUrl(): void {
+  const url = new URL(window.location.href);
+  if (
+    !url.searchParams.has("code") &&
+    !url.searchParams.has("state") &&
+    !url.searchParams.has("error")
+  )
+    return;
+  url.searchParams.delete("code");
+  url.searchParams.delete("scope");
+  url.searchParams.delete("state");
+  url.searchParams.delete("error");
+  url.searchParams.delete("error_description");
+  window.history.replaceState(
+    {},
+    document.title,
+    url.search ? url.href : url.pathname + url.hash || url.pathname
+  );
+}
+
 const TOOL_DESCRIPTION = `
 **Recable** is a simple tool that helps you migrate your classic Audiotool projects (using Centroid, Kobolt, Minimixer, or Merger) to the new integrated mixer. It works entirely on a **copy** of your project, so your original work is always safe.
 
@@ -286,11 +307,22 @@ export async function createApp(): Promise<HTMLElement> {
     return wrapper;
   }
 
-  const loginStatus = await getLoginStatus({
+  let loginStatus = await getLoginStatus({
     clientId: CLIENT_ID,
     redirectUrl: REDIRECT_URL,
     scope: SCOPE,
   });
+
+  // If we got "Invalid state" after OAuth redirect, the stored state was lost (e.g. different tab or storage). Clean the URL so the user can retry without stale params.
+  if (
+    !loginStatus.loggedIn &&
+    loginStatus.error?.message?.includes("Invalid state") &&
+    (new URLSearchParams(window.location.search).has("code") ||
+      new URLSearchParams(window.location.search).has("state"))
+  ) {
+    cleanOAuthParamsFromUrl();
+    loginStatus = { ...loginStatus, error: new Error("Please try logging in again.") };
+  }
 
   if (loginStatus.loggedIn) {
     renderTopbarLoggedIn(topbarActions, loginStatus);
